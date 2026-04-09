@@ -1,0 +1,563 @@
+//! Agent 主结构体
+//!
+//! 提供有状态的 Agent 包装器，管理消息队列和生命周期
+
+use std::sync::Arc;
+use tokio::sync::{Mutex, RwLock, Notify};
+use tokio_util::sync::CancellationToken;
+use futures::future::BoxFuture;
+
+use pi_ai::types::*;
+
+use crate::types::*;
+use crate::agent_loop::*;
+
+/// Agent 选项
+pub struct AgentOptions {
+    pub model: Option<Model>,
+    pub system_prompt: Option<String>,
+    pub tools: Vec<Arc<dyn AgentTool>>,
+    pub thinking_level: ThinkingLevel,
+    pub thinking_budgets: Option<ThinkingBudgets>,
+    pub transport: Option<Transport>,
+    pub tool_execution: ToolExecutionMode,
+    pub session_id: Option<String>,
+    pub max_retry_delay_ms: Option<u64>,
+    pub convert_to_llm: Option<Arc<dyn Fn(&[AgentMessage]) -> Vec<Message> + Send + Sync>>,
+    pub get_api_key: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    pub before_tool_call: Option<
+        Arc<
+            dyn Fn(&ToolCallContext, CancellationToken) -> BoxFuture<'static, Option<BeforeToolCallResult>>
+                + Send
+                + Sync,
+        >,
+    >,
+    pub after_tool_call: Option<
+        Arc<
+            dyn Fn(
+                    &ToolCallContext,
+                    &AgentToolResult,
+                    bool,
+                    CancellationToken,
+                ) -> BoxFuture<'static, Option<AfterToolCallResult>>
+                + Send
+                + Sync,
+        >,
+    >,
+    pub steering_mode: QueueMode,
+    pub follow_up_mode: QueueMode,
+}
+
+impl Default for AgentOptions {
+    fn default() -> Self {
+        Self {
+            model: None,
+            system_prompt: None,
+            tools: Vec::new(),
+            thinking_level: ThinkingLevel::Off,
+            thinking_budgets: None,
+            transport: None,
+            tool_execution: ToolExecutionMode::Parallel,
+            session_id: None,
+            max_retry_delay_ms: None,
+            convert_to_llm: None,
+            get_api_key: None,
+            before_tool_call: None,
+            after_tool_call: None,
+            steering_mode: QueueMode::OneAtATime,
+            follow_up_mode: QueueMode::OneAtATime,
+        }
+    }
+}
+
+/// 默认模型（未知模型占位符）
+fn default_model() -> Model {
+    Model {
+        id: "unknown".to_string(),
+        name: "unknown".to_string(),
+        api: Api::Anthropic,
+        provider: Provider::Anthropic,
+        base_url: String::new(),
+        reasoning: false,
+        input: vec![InputModality::Text],
+        cost: ModelCost {
+            input: 0.0,
+            output: 0.0,
+            cache_read: None,
+            cache_write: None,
+        },
+        context_window: 0,
+        max_tokens: 0,
+        headers: None,
+        compat: None,
+    }
+}
+
+/// 默认消息转换函数
+pub fn default_convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
+    messages
+        .iter()
+        .filter_map(|msg| match msg {
+            AgentMessage::Llm(m) => match m {
+                Message::User(_) | Message::Assistant(_) | Message::ToolResult(_) => Some(m.clone()),
+            },
+        })
+        .collect()
+}
+
+/// Agent 主结构体
+pub struct Agent {
+    state: Arc<RwLock<AgentState>>,
+    listeners: Arc<RwLock<Vec<Arc<dyn Fn(AgentEvent, CancellationToken) + Send + Sync>>>>,
+    cancel: Arc<Mutex<Option<CancellationToken>>>,
+    idle_notify: Arc<Notify>,
+
+    // 消息队列
+    steering_queue: Arc<Mutex<PendingMessageQueue>>,
+    follow_up_queue: Arc<Mutex<PendingMessageQueue>>,
+
+    // 配置
+    convert_to_llm: Arc<dyn Fn(&[AgentMessage]) -> Vec<Message> + Send + Sync>,
+    get_api_key: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    before_tool_call: Option<
+        Arc<
+            dyn Fn(&ToolCallContext, CancellationToken) -> BoxFuture<'static, Option<BeforeToolCallResult>>
+                + Send
+                + Sync,
+        >,
+    >,
+    after_tool_call: Option<
+        Arc<
+            dyn Fn(
+                    &ToolCallContext,
+                    &AgentToolResult,
+                    bool,
+                    CancellationToken,
+                ) -> BoxFuture<'static, Option<AfterToolCallResult>>
+                + Send
+                + Sync,
+        >,
+    >,
+    session_id: Option<String>,
+    thinking_budgets: Option<ThinkingBudgets>,
+    transport: Option<Transport>,
+    max_retry_delay_ms: Option<u64>,
+    tool_execution: ToolExecutionMode,
+}
+
+impl Agent {
+    /// 创建新的 Agent
+    pub fn new(options: AgentOptions) -> Self {
+        let model = options.model.unwrap_or_else(default_model);
+        let mut state = AgentState::new(model);
+        state.system_prompt = options.system_prompt.unwrap_or_default();
+        state.tools = options.tools.clone();
+        state.thinking_level = options.thinking_level;
+
+        Self {
+            state: Arc::new(RwLock::new(state)),
+            listeners: Arc::new(RwLock::new(Vec::new())),
+            cancel: Arc::new(Mutex::new(None)),
+            idle_notify: Arc::new(Notify::new()),
+            steering_queue: Arc::new(Mutex::new(PendingMessageQueue::new(options.steering_mode))),
+            follow_up_queue: Arc::new(Mutex::new(PendingMessageQueue::new(options.follow_up_mode))),
+            convert_to_llm: options.convert_to_llm.unwrap_or_else(|| Arc::new(default_convert_to_llm)),
+            get_api_key: options.get_api_key,
+            before_tool_call: options.before_tool_call,
+            after_tool_call: options.after_tool_call,
+            session_id: options.session_id,
+            thinking_budgets: options.thinking_budgets,
+            transport: options.transport,
+            max_retry_delay_ms: options.max_retry_delay_ms,
+            tool_execution: options.tool_execution,
+        }
+    }
+
+    /// 订阅事件，返回取消订阅函数
+    pub fn subscribe(
+        &self,
+        listener: Arc<dyn Fn(AgentEvent, CancellationToken) + Send + Sync>,
+    ) -> impl FnOnce() {
+        let listeners = self.listeners.clone();
+        let listener_clone = listener.clone();
+
+        // 添加到监听器列表
+        tokio::spawn(async move {
+            let mut list = listeners.write().await;
+            list.push(listener_clone);
+        });
+
+        // 返回取消订阅函数
+        let listeners = self.listeners.clone();
+        move || {
+            let listeners = listeners.clone();
+            tokio::spawn(async move {
+                let mut list = listeners.write().await;
+                list.retain(|l| !Arc::ptr_eq(l, &listener));
+            });
+        }
+    }
+
+    /// 获取当前状态快照
+    pub async fn state(&self) -> AgentState {
+        self.state.read().await.clone()
+    }
+
+    /// 获取取消 token
+    pub async fn cancel_token(&self) -> Option<CancellationToken> {
+        self.cancel.lock().await.clone()
+    }
+
+    /// 注入转向消息
+    pub async fn steer(&self, message: AgentMessage) {
+        self.steering_queue.lock().await.enqueue(message);
+    }
+
+    /// 注入后续消息
+    pub async fn follow_up(&self, message: AgentMessage) {
+        self.follow_up_queue.lock().await.enqueue(message);
+    }
+
+    /// 清除转向队列
+    pub async fn clear_steering_queue(&self) {
+        self.steering_queue.lock().await.clear();
+    }
+
+    /// 清除后续队列
+    pub async fn clear_follow_up_queue(&self) {
+        self.follow_up_queue.lock().await.clear();
+    }
+
+    /// 清除所有队列
+    pub async fn clear_all_queues(&self) {
+        self.clear_steering_queue().await;
+        self.clear_follow_up_queue().await;
+    }
+
+    /// 检查是否有队列消息
+    pub async fn has_queued_messages(&self) -> bool {
+        let steering = self.steering_queue.lock().await.has_items();
+        let follow_up = self.follow_up_queue.lock().await.has_items();
+        steering || follow_up
+    }
+
+    /// 中止当前运行
+    pub async fn abort(&self) {
+        if let Some(token) = self.cancel.lock().await.take() {
+            token.cancel();
+        }
+    }
+
+    /// 等待空闲
+    pub async fn wait_for_idle(&self) {
+        // 如果正在运行，等待通知
+        let is_streaming = self.state.read().await.is_streaming;
+        if is_streaming {
+            self.idle_notify.notified().await;
+        }
+    }
+
+    /// 重置状态
+    pub async fn reset(&self) {
+        let mut state = self.state.write().await;
+        state.messages.clear();
+        state.is_streaming = false;
+        state.streaming_message = None;
+        state.pending_tool_calls.clear();
+        state.error_message = None;
+        drop(state);
+
+        self.clear_all_queues().await;
+    }
+
+    /// 发送 prompt 并运行 agent 循环
+    pub async fn prompt(&self, message: AgentMessage) -> anyhow::Result<()> {
+        // 检查是否已经在运行
+        {
+            let state = self.state.read().await;
+            if state.is_streaming {
+                anyhow::bail!("Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion.");
+            }
+        }
+
+        self.run_with_lifecycle(|cancel| async move {
+            let mut context = self.create_context_snapshot().await;
+            let config = self.create_loop_config(false).await;
+
+            run_agent_loop(
+                vec![message],
+                &mut context,
+                &config,
+                &|event| {
+                    self.process_event(event);
+                },
+                cancel,
+            )
+            .await?;
+
+            // 更新状态
+            let mut state = self.state.write().await;
+            state.messages = context.messages;
+
+            Ok(())
+        })
+        .await
+    }
+
+    /// 发送文本 prompt
+    pub async fn prompt_text(&self, text: &str) -> anyhow::Result<()> {
+        self.prompt(AgentMessage::user(text)).await
+    }
+
+    /// 发送带图片的 prompt
+    pub async fn prompt_with_images(&self, text: &str, images: Vec<ImageContent>) -> anyhow::Result<()> {
+        self.prompt(AgentMessage::user_with_images(text, images)).await
+    }
+
+    /// 继续上一次的循环
+    pub async fn continue_loop(&self) -> anyhow::Result<()> {
+        // 检查是否已经在运行
+        {
+            let state = self.state.read().await;
+            if state.is_streaming {
+                anyhow::bail!("Agent is already processing. Wait for completion before continuing.");
+            }
+
+            // 检查最后一条消息
+            if let Some(last) = state.messages.last() {
+                if last.role() == "assistant" {
+                    // 检查是否有队列消息
+                    let steering = self.steering_queue.lock().await.drain();
+                    if !steering.is_empty() {
+                        return self.run_with_lifecycle(|cancel| async move {
+                            let mut context = self.create_context_snapshot().await;
+                            let config = self.create_loop_config(true).await;
+
+                            run_agent_loop(
+                                steering,
+                                &mut context,
+                                &config,
+                                &|event| {
+                                    self.process_event(event);
+                                },
+                                cancel,
+                            )
+                            .await?;
+
+                            let mut state = self.state.write().await;
+                            state.messages = context.messages;
+
+                            Ok(())
+                        }).await;
+                    }
+
+                    let follow_ups = self.follow_up_queue.lock().await.drain();
+                    if !follow_ups.is_empty() {
+                        return self.run_with_lifecycle(|cancel| async move {
+                            let mut context = self.create_context_snapshot().await;
+                            let config = self.create_loop_config(false).await;
+
+                            run_agent_loop(
+                                follow_ups,
+                                &mut context,
+                                &config,
+                                &|event| {
+                                    self.process_event(event);
+                                },
+                                cancel,
+                            )
+                            .await?;
+
+                            let mut state = self.state.write().await;
+                            state.messages = context.messages;
+
+                            Ok(())
+                        }).await;
+                    }
+
+                    anyhow::bail!("Cannot continue from message role: assistant");
+                }
+            } else {
+                anyhow::bail!("No messages to continue from");
+            }
+        }
+
+        // 继续循环
+        self.run_with_lifecycle(|cancel| async move {
+            let mut context = self.create_context_snapshot().await;
+            let config = self.create_loop_config(false).await;
+
+            run_agent_loop_continue(
+                &mut context,
+                &config,
+                &|event| {
+                    self.process_event(event);
+                },
+                cancel,
+            )
+            .await?;
+
+            let mut state = self.state.write().await;
+            state.messages = context.messages;
+
+            Ok(())
+        })
+        .await
+    }
+
+    /// 运行生命周期管理
+    async fn run_with_lifecycle<F, Fut>(&self, executor: F) -> anyhow::Result<()>
+    where
+        F: FnOnce(CancellationToken) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<()>>,
+    {
+        // 设置运行状态
+        {
+            let mut state = self.state.write().await;
+            state.is_streaming = true;
+            state.streaming_message = None;
+            state.error_message = None;
+        }
+
+        // 创建取消 token
+        let cancel = CancellationToken::new();
+        *self.cancel.lock().await = Some(cancel.clone());
+
+        // 执行
+        let result = executor(cancel.clone()).await;
+
+        // 处理错误
+        if let Err(ref e) = result {
+            if !cancel.is_cancelled() {
+                let error_msg = AssistantMessage::new(
+                    Api::Anthropic,
+                    Provider::Anthropic,
+                    "unknown",
+                )
+                .with_error_message(e.to_string());
+
+                let mut state = self.state.write().await;
+                state.messages.push(AgentMessage::Llm(Message::Assistant(error_msg.clone())));
+                state.error_message = Some(error_msg.error_message.clone().unwrap_or_default());
+            }
+        }
+
+        // 清理运行状态
+        {
+            let mut state = self.state.write().await;
+            state.is_streaming = false;
+            state.streaming_message = None;
+            state.pending_tool_calls.clear();
+        }
+
+        *self.cancel.lock().await = None;
+        self.idle_notify.notify_waiters();
+
+        result
+    }
+
+    /// 创建上下文快照
+    async fn create_context_snapshot(&self) -> AgentContext {
+        let state = self.state.read().await;
+        AgentContext {
+            system_prompt: state.system_prompt.clone(),
+            messages: state.messages.clone(),
+            tools: state.tools.clone(),
+        }
+    }
+
+    /// 创建循环配置
+    async fn create_loop_config(&self, skip_initial_steering: bool) -> AgentLoopConfig {
+        let state = self.state.read().await;
+
+        let steering_queue = self.steering_queue.clone();
+        let follow_up_queue = self.follow_up_queue.clone();
+
+        AgentLoopConfig {
+            model: state.model.clone(),
+            thinking_level: state.thinking_level.clone(),
+            thinking_budgets: self.thinking_budgets.clone(),
+            temperature: None,
+            max_tokens: None,
+            transport: self.transport.clone(),
+            cache_retention: None,
+            session_id: self.session_id.clone(),
+            max_retry_delay_ms: self.max_retry_delay_ms,
+            convert_to_llm: self.convert_to_llm.clone(),
+            transform_context: None,
+            get_api_key: self.get_api_key.clone(),
+            get_steering_messages: Some(Arc::new(move || {
+                if skip_initial_steering {
+                    Vec::new()
+                } else {
+                    tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async {
+                            steering_queue.lock().await.drain()
+                        })
+                    })
+                }
+            })),
+            get_follow_up_messages: Some(Arc::new(move || {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        follow_up_queue.lock().await.drain()
+                    })
+                })
+            })),
+            tool_execution: self.tool_execution,
+            before_tool_call: self.before_tool_call.clone(),
+            after_tool_call: self.after_tool_call.clone(),
+        }
+    }
+
+    /// 处理事件
+    fn process_event(&self, event: AgentEvent) {
+        // 更新内部状态
+        let state = self.state.clone();
+        let listeners = self.listeners.clone();
+
+        tokio::spawn(async move {
+            {
+                let mut s = state.write().await;
+                match &event {
+                    AgentEvent::MessageStart { message } => {
+                        s.streaming_message = Some(message.clone());
+                    }
+                    AgentEvent::MessageUpdate { message, .. } => {
+                        s.streaming_message = Some(message.clone());
+                    }
+                    AgentEvent::MessageEnd { message } => {
+                        s.streaming_message = None;
+                        s.messages.push(message.clone());
+                    }
+                    AgentEvent::ToolExecutionStart { tool_call_id, .. } => {
+                        s.pending_tool_calls.insert(tool_call_id.clone());
+                    }
+                    AgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
+                        s.pending_tool_calls.remove(tool_call_id);
+                    }
+                    AgentEvent::TurnEnd { message, .. } => {
+                        if let AgentMessage::Llm(Message::Assistant(assistant)) = message {
+                            if let Some(ref error) = assistant.error_message {
+                                s.error_message = Some(error.clone());
+                            }
+                        }
+                    }
+                    AgentEvent::AgentEnd { .. } => {
+                        s.streaming_message = None;
+                    }
+                    _ => {}
+                }
+            }
+
+            // 通知监听器
+            let cancel = CancellationToken::new(); // 创建临时 token 用于监听器
+            let list = listeners.read().await;
+            for listener in list.iter() {
+                listener(event.clone(), cancel.clone());
+            }
+        });
+    }
+}
+
+

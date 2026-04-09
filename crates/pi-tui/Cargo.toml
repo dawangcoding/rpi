@@ -1,0 +1,13 @@
+[package]
+name = "pi-tui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossterm.workspace = true
+tokio.workspace = true
+unicode-width.workspace = true
+pulldown-cmark.workspace = true
+base64.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

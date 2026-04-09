@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pi-ai",
+    "crates/pi-tui",
+    "crates/pi-agent",
+    "crates/pi-coding-agent",
+]
+
+[workspace.dependencies]
+# 共享依赖版本
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures = "0.3"
+async-trait = "0.1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest-eventsource = "0.6"
+crossterm = "0.28"
+clap = { version = "4", features = ["derive"] }
+unicode-width = "0.2"
+pulldown-cmark = "0.12"
+similar = "2"
+base64 = "0.22"
+regex = "1"
+ignore = "0.4"
+globset = "0.4"
+directories = "6"
+serde_yaml = "0.9"
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+pin-project-lite = "0.2"
+bytes = "1"

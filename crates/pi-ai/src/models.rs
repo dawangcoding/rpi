@@ -1,0 +1,421 @@
+//! 模型注册表
+//!
+//! 管理内置的 LLM 模型定义和查询
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use crate::types::*;
+
+/// 模型成本（每百万 token 的美元价格）
+#[derive(Debug, Clone, Copy)]
+pub struct ModelCost {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: Option<f64>,
+    pub cache_write: Option<f64>,
+}
+
+impl Default for ModelCost {
+    fn default() -> Self {
+        Self {
+            input: 0.0,
+            output: 0.0,
+            cache_read: None,
+            cache_write: None,
+        }
+    }
+}
+
+impl From<ModelCost> for crate::types::ModelCost {
+    fn from(cost: ModelCost) -> Self {
+        Self {
+            input: cost.input,
+            output: cost.output,
+            cache_read: cost.cache_read,
+            cache_write: cost.cache_write,
+        }
+    }
+}
+
+/// 注册内置模型
+fn builtin_models() -> Vec<Model> {
+    vec![
+        // ==================== Anthropic ====================
+        Model {
+            id: "claude-sonnet-4-20250514".to_string(),
+            name: "Claude Sonnet 4".to_string(),
+            api: Api::Anthropic,
+            provider: Provider::Anthropic,
+            base_url: "https://api.anthropic.com".to_string(),
+            reasoning: true,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: Some(0.3),
+                cache_write: Some(3.75),
+            }.into(),
+            context_window: 200000,
+            max_tokens: 16384,
+            headers: None,
+            compat: None,
+        },
+        Model {
+            id: "claude-3-5-sonnet-20241022".to_string(),
+            name: "Claude 3.5 Sonnet".to_string(),
+            api: Api::Anthropic,
+            provider: Provider::Anthropic,
+            base_url: "https://api.anthropic.com".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: Some(0.3),
+                cache_write: Some(3.75),
+            }.into(),
+            context_window: 200000,
+            max_tokens: 8192,
+            headers: None,
+            compat: None,
+        },
+        Model {
+            id: "claude-opus-4-20250514".to_string(),
+            name: "Claude Opus 4".to_string(),
+            api: Api::Anthropic,
+            provider: Provider::Anthropic,
+            base_url: "https://api.anthropic.com".to_string(),
+            reasoning: true,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost {
+                input: 15.0,
+                output: 75.0,
+                cache_read: Some(1.5),
+                cache_write: Some(18.75),
+            }.into(),
+            context_window: 200000,
+            max_tokens: 32000,
+            headers: None,
+            compat: None,
+        },
+        Model {
+            id: "claude-3-7-sonnet-20250219".to_string(),
+            name: "Claude 3.7 Sonnet".to_string(),
+            api: Api::Anthropic,
+            provider: Provider::Anthropic,
+            base_url: "https://api.anthropic.com".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: Some(0.3),
+                cache_write: Some(3.75),
+            }.into(),
+            context_window: 200000,
+            max_tokens: 8192,
+            headers: None,
+            compat: None,
+        },
+        
+        // ==================== OpenAI ====================
+        Model {
+            id: "gpt-4o".to_string(),
+            name: "GPT-4o".to_string(),
+            api: Api::OpenAiChatCompletions,
+            provider: Provider::Openai,
+            base_url: "https://api.openai.com/v1".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost {
+                input: 2.5,
+                output: 10.0,
+                cache_read: Some(1.25),
+                cache_write: Some(2.5),
+            }.into(),
+            context_window: 128000,
+            max_tokens: 16384,
+            headers: None,
+            compat: None,
+        },
+        Model {
+            id: "gpt-4o-mini".to_string(),
+            name: "GPT-4o Mini".to_string(),
+            api: Api::OpenAiChatCompletions,
+            provider: Provider::Openai,
+            base_url: "https://api.openai.com/v1".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost {
+                input: 0.15,
+                output: 0.6,
+                cache_read: Some(0.075),
+                cache_write: Some(0.15),
+            }.into(),
+            context_window: 128000,
+            max_tokens: 16384,
+            headers: None,
+            compat: None,
+        },
+        Model {
+            id: "o3-mini".to_string(),
+            name: "o3-mini".to_string(),
+            api: Api::OpenAiChatCompletions,
+            provider: Provider::Openai,
+            base_url: "https://api.openai.com/v1".to_string(),
+            reasoning: true,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost {
+                input: 1.1,
+                output: 4.4,
+                cache_read: Some(0.55),
+                cache_write: Some(1.1),
+            }.into(),
+            context_window: 200000,
+            max_tokens: 100000,
+            headers: None,
+            compat: None,
+        },
+        Model {
+            id: "o1".to_string(),
+            name: "o1".to_string(),
+            api: Api::OpenAiChatCompletions,
+            provider: Provider::Openai,
+            base_url: "https://api.openai.com/v1".to_string(),
+            reasoning: true,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost {
+                input: 15.0,
+                output: 60.0,
+                cache_read: Some(7.5),
+                cache_write: Some(15.0),
+            }.into(),
+            context_window: 200000,
+            max_tokens: 100000,
+            headers: None,
+            compat: None,
+        },
+        
+        // ==================== Google ====================
+        Model {
+            id: "gemini-2.5-pro-preview-05-06".to_string(),
+            name: "Gemini 2.5 Pro".to_string(),
+            api: Api::Google,
+            provider: Provider::Google,
+            base_url: "https://generativelanguage.googleapis.com".to_string(),
+            reasoning: true,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost {
+                input: 1.25,
+                output: 10.0,
+                cache_read: Some(0.315),
+                cache_write: Some(1.25),
+            }.into(),
+            context_window: 1048576,
+            max_tokens: 65536,
+            headers: None,
+            compat: None,
+        },
+        Model {
+            id: "gemini-2.5-flash-preview-04-17".to_string(),
+            name: "Gemini 2.5 Flash".to_string(),
+            api: Api::Google,
+            provider: Provider::Google,
+            base_url: "https://generativelanguage.googleapis.com".to_string(),
+            reasoning: true,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost {
+                input: 0.15,
+                output: 0.6,
+                cache_read: Some(0.0375),
+                cache_write: Some(0.15),
+            }.into(),
+            context_window: 1048576,
+            max_tokens: 65536,
+            headers: None,
+            compat: None,
+        },
+        Model {
+            id: "gemini-2.0-flash".to_string(),
+            name: "Gemini 2.0 Flash".to_string(),
+            api: Api::Google,
+            provider: Provider::Google,
+            base_url: "https://generativelanguage.googleapis.com".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost {
+                input: 0.1,
+                output: 0.4,
+                cache_read: None,
+                cache_write: None,
+            }.into(),
+            context_window: 1048576,
+            max_tokens: 8192,
+            headers: None,
+            compat: None,
+        },
+    ]
+}
+
+// 全局模型注册表
+static MODEL_REGISTRY: OnceLock<HashMap<String, Model>> = OnceLock::new();
+
+/// 初始化模型注册表
+fn init_model_registry() -> HashMap<String, Model> {
+    let models = builtin_models();
+    let mut registry = HashMap::with_capacity(models.len());
+    
+    for model in models {
+        registry.insert(model.id.clone(), model);
+    }
+    
+    registry
+}
+
+/// 获取模型注册表
+fn get_registry() -> &'static HashMap<String, Model> {
+    MODEL_REGISTRY.get_or_init(init_model_registry)
+}
+
+/// 通过模型 ID 获取模型
+pub fn get_model(id: &str) -> Option<Model> {
+    get_registry().get(id).cloned()
+}
+
+/// 获取所有模型
+pub fn get_models() -> Vec<Model> {
+    get_registry().values().cloned().collect()
+}
+
+/// 根据 provider 获取模型
+pub fn get_models_by_provider(provider: &Provider) -> Vec<Model> {
+    get_registry()
+        .values()
+        .filter(|m| &m.provider == provider)
+        .cloned()
+        .collect()
+}
+
+/// 根据 API 类型获取模型
+pub fn get_models_by_api(api: &Api) -> Vec<Model> {
+    get_registry()
+        .values()
+        .filter(|m| &m.api == api)
+        .cloned()
+        .collect()
+}
+
+/// 计算成本（返回美元）
+pub fn calculate_cost(model: &Model, usage: &Usage) -> f64 {
+    let input_cost = (model.cost.input / 1_000_000.0) * usage.input_tokens as f64;
+    let output_cost = (model.cost.output / 1_000_000.0) * usage.output_tokens as f64;
+    
+    let cache_read_cost = usage.cache_read_tokens.map(|tokens| {
+        model.cost.cache_read.unwrap_or(0.0) / 1_000_000.0 * tokens as f64
+    }).unwrap_or(0.0);
+    
+    let cache_write_cost = usage.cache_write_tokens.map(|tokens| {
+        model.cost.cache_write.unwrap_or(0.0) / 1_000_000.0 * tokens as f64
+    }).unwrap_or(0.0);
+    
+    input_cost + output_cost + cache_read_cost + cache_write_cost
+}
+
+/// 检查模型是否支持 xhigh thinking level
+pub fn supports_xhigh(model: &Model) -> bool {
+    let id = &model.id;
+    id.contains("gpt-5.2") || id.contains("gpt-5.3") || id.contains("gpt-5.4")
+        || id.contains("opus-4-6") || id.contains("opus-4.6")
+}
+
+/// 检查两个模型是否相等
+pub fn models_are_equal(a: Option<&Model>, b: Option<&Model>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a.id == b.id && a.provider == b.provider,
+        _ => false,
+    }
+}
+
+/// 从环境变量获取 API Key
+pub fn get_api_key_from_env(provider: &Provider) -> Option<String> {
+    use std::env;
+    
+    match provider {
+        Provider::Anthropic => {
+            env::var("ANTHROPIC_OAUTH_TOKEN")
+                .ok()
+                .or_else(|| env::var("ANTHROPIC_API_KEY").ok())
+        }
+        Provider::Openai => env::var("OPENAI_API_KEY").ok(),
+        Provider::Google | Provider::GoogleGeminiCli | Provider::GoogleAntigravity => {
+            env::var("GOOGLE_API_KEY")
+                .ok()
+                .or_else(|| env::var("GEMINI_API_KEY").ok())
+        }
+        Provider::GoogleVertex => {
+            env::var("GOOGLE_CLOUD_API_KEY").ok()
+        }
+        Provider::Groq => env::var("GROQ_API_KEY").ok(),
+        Provider::Cerebras => env::var("CEREBRAS_API_KEY").ok(),
+        Provider::Xai => env::var("XAI_API_KEY").ok(),
+        Provider::Openrouter => env::var("OPENROUTER_API_KEY").ok(),
+        Provider::VercelAiGateway => env::var("AI_GATEWAY_API_KEY").ok(),
+        Provider::Mistral => env::var("MISTRAL_API_KEY").ok(),
+        Provider::Minimax => env::var("MINIMAX_API_KEY").ok(),
+        Provider::MinimaxCn => env::var("MINIMAX_CN_API_KEY").ok(),
+        Provider::Huggingface => env::var("HF_TOKEN").ok(),
+        Provider::Opencode | Provider::OpencodeGo => env::var("OPENCODE_API_KEY").ok(),
+        Provider::KimiCoding => env::var("KIMI_API_KEY").ok(),
+        Provider::AzureOpenAiResponses => env::var("AZURE_OPENAI_API_KEY").ok(),
+        Provider::OpenAiCodex => env::var("OPENAI_CODEX_API_KEY").ok(),
+        Provider::GithubCopilot => {
+            env::var("COPILOT_GITHUB_TOKEN")
+                .ok()
+                .or_else(|| env::var("GH_TOKEN").ok())
+                .or_else(|| env::var("GITHUB_TOKEN").ok())
+        }
+        Provider::Zai => env::var("ZAI_API_KEY").ok(),
+        Provider::AmazonBedrock => {
+            // Amazon Bedrock 使用 AWS 凭证
+            if env::var("AWS_PROFILE").is_ok()
+                || (env::var("AWS_ACCESS_KEY_ID").is_ok() && env::var("AWS_SECRET_ACCESS_KEY").is_ok())
+                || env::var("AWS_BEARER_TOKEN_BEDROCK").is_ok()
+                || env::var("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI").is_ok()
+                || env::var("AWS_CONTAINER_CREDENTIALS_FULL_URI").is_ok()
+                || env::var("AWS_WEB_IDENTITY_TOKEN_FILE").is_ok()
+            {
+                Some("<authenticated>".to_string())
+            } else {
+                None
+            }
+        }
+        Provider::Other(_) => None,
+    }
+}
+
+/// 获取指定 provider 的 API key 环境变量名称
+pub fn get_api_key_env_var(provider: &Provider) -> Option<&'static str> {
+    match provider {
+        Provider::Anthropic => Some("ANTHROPIC_API_KEY"),
+        Provider::Openai => Some("OPENAI_API_KEY"),
+        Provider::Google | Provider::GoogleGeminiCli | Provider::GoogleAntigravity => Some("GEMINI_API_KEY"),
+        Provider::GoogleVertex => Some("GOOGLE_CLOUD_API_KEY"),
+        Provider::Groq => Some("GROQ_API_KEY"),
+        Provider::Cerebras => Some("CEREBRAS_API_KEY"),
+        Provider::Xai => Some("XAI_API_KEY"),
+        Provider::Openrouter => Some("OPENROUTER_API_KEY"),
+        Provider::VercelAiGateway => Some("AI_GATEWAY_API_KEY"),
+        Provider::Mistral => Some("MISTRAL_API_KEY"),
+        Provider::Minimax => Some("MINIMAX_API_KEY"),
+        Provider::MinimaxCn => Some("MINIMAX_CN_API_KEY"),
+        Provider::Huggingface => Some("HF_TOKEN"),
+        Provider::Opencode | Provider::OpencodeGo => Some("OPENCODE_API_KEY"),
+        Provider::KimiCoding => Some("KIMI_API_KEY"),
+        Provider::AzureOpenAiResponses => Some("AZURE_OPENAI_API_KEY"),
+        Provider::OpenAiCodex => Some("OPENAI_CODEX_API_KEY"),
+        Provider::GithubCopilot => Some("GITHUB_TOKEN"),
+        Provider::Zai => Some("ZAI_API_KEY"),
+        Provider::AmazonBedrock => Some("AWS_ACCESS_KEY_ID"),
+        Provider::Other(_) => None,
+    }
+}
