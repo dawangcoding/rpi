@@ -397,4 +397,93 @@ mod tests {
             assert!(lines[0].ends_with(expected_right));
         }
     }
+
+    #[test]
+    fn test_box_extreme_narrow_width() {
+        // 测试极端窄宽度（width=3 是最小有效宽度）
+        let mut box_comp = BoxComponent::single();
+        box_comp.set_child(Box::new(MockComponent {
+            lines: vec!["A".to_string()],
+        }));
+        
+        let lines = box_comp.render(3);
+        // 应该能渲染，即使很窄
+        assert!(!lines.is_empty());
+        // 边框 + 内容 + 边框 = 3 字符
+        assert_eq!(lines[0].chars().count(), 3);
+    }
+
+    #[test]
+    fn test_nested_box_component() {
+        // 创建嵌套的 BoxComponent
+        let mut inner_box = BoxComponent::single();
+        inner_box.set_child(Box::new(MockComponent {
+            lines: vec!["Inner".to_string()],
+        }));
+        
+        let mut outer_box = BoxComponent::double();
+        outer_box.set_child(Box::new(inner_box));
+        
+        let lines = outer_box.render(20);
+        
+        // 验证外层边框是双线样式
+        assert!(lines[0].starts_with('╔'));
+        assert!(lines[0].ends_with('╗'));
+        // 应该包含内层内容
+        assert!(lines.iter().any(|l| l.contains("Inner")));
+    }
+
+    #[test]
+    fn test_box_with_empty_child() {
+        let mut box_comp = BoxComponent::single();
+        box_comp.set_child(Box::new(MockComponent {
+            lines: vec![],
+        }));
+        
+        let lines = box_comp.render(10);
+        // 空子组件也应该能渲染边框
+        assert!(!lines.is_empty());
+        assert!(lines[0].starts_with('┌'));
+        assert!(lines[lines.len() - 1].starts_with('└'));
+    }
+
+    #[test]
+    fn test_box_with_multiline_child() {
+        let mut box_comp = BoxComponent::single();
+        box_comp.set_child(Box::new(MockComponent {
+            lines: vec![
+                "Line 1".to_string(),
+                "Line 2".to_string(),
+                "Line 3".to_string(),
+            ],
+        }));
+        
+        let lines = box_comp.render(15);
+        
+        // 应该有顶部边框、内容行、底部边框
+        assert!(lines.len() >= 5);
+        assert!(lines.iter().any(|l| l.contains("Line 1")));
+        assert!(lines.iter().any(|l| l.contains("Line 2")));
+        assert!(lines.iter().any(|l| l.contains("Line 3")));
+    }
+
+    #[test]
+    fn test_box_border_style_chars() {
+        // 测试所有边框样式的字符
+        let style_chars = vec![
+            (BorderStyle::None, ' ', ' ', ' ', ' '),
+            (BorderStyle::Single, '┌', '┐', '└', '┘'),
+            (BorderStyle::Double, '╔', '╗', '╚', '╝'),
+            (BorderStyle::Rounded, '╭', '╮', '╰', '╯'),
+            (BorderStyle::Heavy, '┏', '┓', '┗', '┛'),
+        ];
+        
+        for (style, tl, tr, bl, br) in style_chars {
+            let chars = style.chars();
+            assert_eq!(chars.top_left, tl);
+            assert_eq!(chars.top_right, tr);
+            assert_eq!(chars.bottom_left, bl);
+            assert_eq!(chars.bottom_right, br);
+        }
+    }
 }

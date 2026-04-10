@@ -12,6 +12,7 @@ use crate::types::*;
 use crate::context_manager::ContextWindowManager;
 
 /// Agent 循环配置
+#[allow(clippy::type_complexity)] // 复杂类型是必要的，用于回调函数
 pub struct AgentLoopConfig {
     pub model: Model,
     pub thinking_level: ThinkingLevel,
@@ -340,6 +341,7 @@ async fn stream_assistant_response(
     let mut event_stream = pi_ai::stream(&llm_context, &config.model, &stream_options).await?;
 
     // 消费事件流
+    #[allow(unused_assignments)] // final_message 在多个分支中被赋值
     let mut final_message: Option<AssistantMessage> = None;
     let mut current_partial: Option<AssistantMessage> = None;
     let mut started = false;
@@ -1105,5 +1107,164 @@ mod tests {
         let debug_str = format!("{:?}", context);
         assert!(debug_str.contains("AgentContext"));
         assert!(debug_str.contains("Test"));
+    }
+
+    #[test]
+    fn test_empty_tool_list_handling() {
+        // 测试空工具列表的处理
+        let context = AgentContext {
+            system_prompt: "You are helpful".to_string(),
+            messages: vec![AgentMessage::user("Hello")],
+            tools: vec![], // 空工具列表
+        };
+        
+        assert!(context.tools.is_empty());
+        assert_eq!(context.messages.len(), 1);
+    }
+
+    #[test]
+    fn test_message_boundary_conditions() {
+        // 测试消息边界条件
+        let mut messages = vec![];
+        
+        // 添加大量消息测试边界
+        for i in 0..100 {
+            messages.push(AgentMessage::user(&format!("Message {}", i)));
+        }
+        
+        let context = AgentContext {
+            system_prompt: "Test".to_string(),
+            messages: messages.clone(),
+            tools: vec![],
+        };
+        
+        assert_eq!(context.messages.len(), 100);
+        
+        // 测试消息转换
+        let llm_messages = default_convert_to_llm(&messages);
+        assert_eq!(llm_messages.len(), 100);
+    }
+
+    #[test]
+    fn test_agent_message_variants() {
+        // 测试不同类型的 AgentMessage
+        let user_msg = AgentMessage::user("User message");
+        
+        // 验证消息类型 - AgentMessage 包装的是 Llm(Message)
+        match &user_msg {
+            AgentMessage::Llm(Message::User(_)) => {},
+            _ => panic!("Expected User message wrapped in Llm"),
+        }
+        
+        // 验证 user 方法创建的消息内容
+        if let AgentMessage::Llm(Message::User(user)) = &user_msg {
+            match &user.content {
+                UserContent::Text(text) => assert_eq!(text, "User message"),
+                _ => panic!("Expected text content"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_agent_loop_config_default() {
+        use pi_ai::ModelCost;
+        
+        // 测试 AgentLoopConfig 的默认值
+        let config = AgentLoopConfig {
+            model: Model {
+                id: "test-model".to_string(),
+                name: "Test Model".to_string(),
+                api: Api::Anthropic,
+                provider: Provider::Anthropic,
+                base_url: "https://test.com".to_string(),
+                reasoning: false,
+                input: vec![InputModality::Text],
+                cost: ModelCost {
+                    input: 0.0,
+                    output: 0.0,
+                    cache_read: None,
+                    cache_write: None,
+                },
+                context_window: 100000,
+                max_tokens: 4096,
+                headers: None,
+                compat: None,
+            },
+            thinking_level: ThinkingLevel::Off,
+            thinking_budgets: None,
+            temperature: None,
+            max_tokens: None,
+            transport: None,
+            cache_retention: None,
+            session_id: None,
+            max_retry_delay_ms: None,
+            context_manager: None,
+            convert_to_llm: Arc::new(default_convert_to_llm),
+            transform_context: None,
+            get_api_key: None,
+            get_steering_messages: None,
+            get_follow_up_messages: None,
+            tool_execution: ToolExecutionMode::Sequential,
+            before_tool_call: None,
+            after_tool_call: None,
+        };
+        
+        assert_eq!(config.model.id, "test-model");
+        assert_eq!(config.thinking_level, ThinkingLevel::Off);
+        assert_eq!(config.tool_execution, ToolExecutionMode::Sequential);
+    }
+
+    #[test]
+    fn test_tool_execution_mode_variants() {
+        // 测试工具执行模式的所有变体
+        let sequential = ToolExecutionMode::Sequential;
+        let parallel = ToolExecutionMode::Parallel;
+        
+        // 验证它们是不同的值
+        assert_ne!(
+            std::mem::discriminant(&sequential),
+            std::mem::discriminant(&parallel)
+        );
+    }
+
+    #[test]
+    fn test_thinking_level_variants() {
+        // 测试所有 ThinkingLevel 变体
+        let levels = vec![
+            ThinkingLevel::Off,
+            ThinkingLevel::Minimal,
+            ThinkingLevel::Low,
+            ThinkingLevel::Medium,
+            ThinkingLevel::High,
+            ThinkingLevel::XHigh,
+        ];
+        
+        // 验证每个变体都是唯一的
+        for i in 0..levels.len() {
+            for j in (i+1)..levels.len() {
+                assert_ne!(
+                    std::mem::discriminant(&levels[i]),
+                    std::mem::discriminant(&levels[j]),
+                    "ThinkingLevel variants should be unique"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_empty_context_handling() {
+        // 测试空上下文处理
+        let context = AgentContext {
+            system_prompt: "".to_string(),
+            messages: vec![],
+            tools: vec![],
+        };
+        
+        assert!(context.messages.is_empty());
+        assert!(context.system_prompt.is_empty());
+        
+        // 转换空消息列表
+        let llm_messages = default_convert_to_llm(&context.messages);
+        assert!(llm_messages.is_empty());
     }
 }

@@ -90,7 +90,7 @@ impl WriteTool {
         // 重命名（原子操作）
         fs::rename(&temp_path, path).await.map_err(|e| {
             // 尝试清理临时文件
-            let _ = fs::remove_file(&temp_path);
+            drop(fs::remove_file(&temp_path));
             anyhow::anyhow!("Failed to rename temporary file to '{}': {}", path.display(), e)
         })?;
 

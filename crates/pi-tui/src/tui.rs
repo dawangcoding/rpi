@@ -58,6 +58,7 @@ pub enum SizeValue {
 
 impl SizeValue {
     /// 解析为绝对值
+    #[allow(clippy::wrong_self_convention)]
     fn to_absolute(&self, reference: u16) -> u16 {
         match self {
             SizeValue::Absolute(v) => *v,

@@ -405,6 +405,7 @@ impl StreamState {
         }
     }
 
+    #[allow(dead_code)] // 预留方法供未来使用
     fn finish(&mut self, assistant_message: &mut AssistantMessage) -> Vec<AssistantMessageEvent> {
         let mut events = Vec::new();
 
@@ -448,6 +449,7 @@ impl StreamState {
 
 /// Chat Completion Chunk (SSE 事件)
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Serde 反序列化结构体
 struct ChatCompletionChunk {
     id: String,
     object: String,
@@ -483,6 +485,7 @@ struct CompletionTokensDetails {
 
 /// Choice
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Serde 反序列化结构体
 struct Choice {
     index: i32,
     delta: Delta,
@@ -503,6 +506,7 @@ struct Delta {
 
 /// Tool Call Delta
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Serde 反序列化结构体
 struct ToolCallDelta {
     index: i32,
     #[serde(skip_serializing_if = "Option::is_none")]

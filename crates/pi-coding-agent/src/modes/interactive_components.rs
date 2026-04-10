@@ -75,6 +75,7 @@ pub fn render_thinking_lines(content: &str) -> Vec<String> {
 /// 1. 回退光标到流式区域起始行
 /// 2. 清除旧行
 /// 3. 使用 Markdown 组件重新渲染累积内容
+#[allow(dead_code)] // 多个方法供未来 UI 扩展使用
 pub struct StreamingBlock {
     /// 上一次渲染占用的终端行数
     prev_line_count: usize,
@@ -179,6 +180,7 @@ impl StreamingBlock {
 
     /// 增量追加模式 - 只渲染新增内容
     /// 当只有文本追加（非删除/替换）时使用，避免全量重绘
+    #[allow(dead_code)]
     pub fn append_update(&mut self, new_text: &str, width: u16) -> String {
         // 保存之前的长度用于比较
         let _prev_text_len = self.text.len();
@@ -203,6 +205,7 @@ impl StreamingBlock {
     }
     
     /// 智能更新 - 根据内容变化选择最优更新策略
+    #[allow(dead_code)]
     pub fn smart_update(&mut self, delta: &str, width: u16, is_thinking: bool) -> String {
         if is_thinking {
             self.push_thinking(delta);

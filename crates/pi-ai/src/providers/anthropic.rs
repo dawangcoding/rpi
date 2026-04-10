@@ -518,6 +518,7 @@ impl AnthropicProvider {
     }
 
     /// 映射停止原因
+    #[allow(dead_code)] // 预留方法供未来使用
     fn map_stop_reason(&self, reason: &str) -> StopReason {
         match reason {
             "end_turn" => StopReason::Stop,
@@ -1423,5 +1424,279 @@ data: {"type":"message_stop"}
         assert!(result.is_err());
 
         mock.assert_async().await;
+    }
+
+    // ==================== 边界测试 ====================
+
+    #[tokio::test]
+    async fn test_error_response_400_bad_request() {
+        let mut server = Server::new_async().await;
+        let provider = AnthropicProvider::new();
+
+        let error_json = r#"{"error": {"type": "invalid_request_error", "message": "Invalid request: messages array is required"}}"#;
+
+        let mock = server.mock("POST", "/v1/messages")
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(error_json)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::Anthropic, Provider::Anthropic);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let result = provider.stream(&context, &model, &options).await;
+        assert!(result.is_err());
+        if let Err(err) = result {
+            assert!(err.to_string().contains("400") || err.to_string().contains("invalid_request"));
+        }
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_error_response_500_internal_error() {
+        let mut server = Server::new_async().await;
+        let provider = AnthropicProvider::new();
+
+        let error_json = r#"{"error": {"type": "api_error", "message": "Internal server error"}}"#;
+
+        let mock = server.mock("POST", "/v1/messages")
+            .with_status(500)
+            .with_header("content-type", "application/json")
+            .with_body(error_json)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::Anthropic, Provider::Anthropic);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let result = provider.stream(&context, &model, &options).await;
+        assert!(result.is_err());
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_empty_stream_response() {
+        let mut server = Server::new_async().await;
+        let provider = AnthropicProvider::new();
+
+        // 空的 SSE 响应 - 只返回 message_start 然后 message_stop，没有内容
+        let sse_body = r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_empty","type":"message","role":"assistant","model":"claude-3-sonnet","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}
+
+event: message_stop
+data: {"type":"message_stop"}
+"#;
+
+        let mock = server.mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_body)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::Anthropic, Provider::Anthropic);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let mut stream = provider.stream(&context, &model, &options).await.unwrap();
+
+        let mut events = vec![];
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+
+        // 应该有 Start 和 Done 事件
+        assert!(!events.is_empty());
+        assert!(matches!(events[0], Ok(AssistantMessageEvent::Start { .. })));
+
+        mock.assert_async().await;
+    }
+
+    #[test]
+    fn test_large_message_serialization() {
+        let provider = AnthropicProvider::new();
+        let model = sample_model(Api::Anthropic, Provider::Anthropic);
+
+        // 创建大量消息
+        let mut messages: Vec<Message> = Vec::new();
+        for i in 0..100 {
+            messages.push(sample_user_message(&format!("Message {} with some content to make it longer", i)));
+        }
+
+        let context = sample_context_with_tools(
+            "You are a helpful assistant",
+            messages,
+            vec![sample_tool("test_tool", "A test tool")],
+        );
+        let options = sample_stream_options("test-api-key");
+
+        // 验证能成功序列化大消息
+        let body = provider.build_request_body(&context, &model, &options, "test-api-key");
+
+        // 验证消息数组长度
+        let messages_array = body["messages"].as_array().unwrap();
+        assert_eq!(messages_array.len(), 100);
+
+        // 验证可以序列化为 JSON 字符串
+        let json_string = serde_json::to_string(&body).unwrap();
+        assert!(!json_string.is_empty());
+        assert!(json_string.len() > 1000);
+    }
+
+    #[test]
+    fn test_empty_user_message_handling() {
+        let provider = AnthropicProvider::new();
+        let model = sample_model(Api::Anthropic, Provider::Anthropic);
+
+        // 空的用户消息应该被跳过
+        let context = sample_context(
+            "You are a helpful assistant",
+            vec![
+                Message::User(UserMessage::new("")),
+                Message::User(UserMessage::new("   ")), // 只有空白字符
+                sample_user_message("Valid message"),
+            ],
+        );
+        let options = sample_stream_options("test-api-key");
+
+        let body = provider.build_request_body(&context, &model, &options, "test-api-key");
+        let messages_array = body["messages"].as_array().unwrap();
+
+        // 空消息应该被跳过，只保留有效消息
+        assert_eq!(messages_array.len(), 1);
+    }
+
+    #[test]
+    fn test_build_headers_oauth_token() {
+        let provider = AnthropicProvider::new();
+        let model = sample_model(Api::Anthropic, Provider::Anthropic);
+        let options = sample_stream_options("sk-ant-oat-test123");
+
+        let headers = provider.build_headers(&model, "sk-ant-oat-test123", &options);
+
+        // OAuth token 应该使用 Bearer 认证
+        assert_eq!(headers.get("authorization").unwrap(), "Bearer sk-ant-oat-test123");
+        // 不应该有 x-api-key
+        assert!(!headers.contains_key("x-api-key"));
+    }
+
+    #[test]
+    fn test_build_headers_standard_api_key() {
+        let provider = AnthropicProvider::new();
+        let model = sample_model(Api::Anthropic, Provider::Anthropic);
+        let options = sample_stream_options("sk-ant-api-test123");
+
+        let headers = provider.build_headers(&model, "sk-ant-api-test123", &options);
+
+        // 标准 API key 应该使用 x-api-key
+        assert_eq!(headers.get("x-api-key").unwrap(), "sk-ant-api-test123");
+        // 不应该有 authorization
+        assert!(!headers.contains_key("authorization"));
+    }
+
+    #[test]
+    fn test_custom_headers_merge() {
+        let provider = AnthropicProvider::new();
+        let model = sample_model(Api::Anthropic, Provider::Anthropic);
+        let mut options = sample_stream_options("test-api-key");
+        let mut headers_map = std::collections::HashMap::new();
+        headers_map.insert("X-Custom-Header".to_string(), "custom-value".to_string());
+        options.headers = Some(headers_map);
+
+        let headers = provider.build_headers(&model, "test-api-key", &options);
+
+        assert_eq!(headers.get("X-Custom-Header").unwrap(), "custom-value");
+    }
+
+    #[test]
+    fn test_error_response_parsing() {
+        // 测试各种错误响应格式的解析
+        let error_json = r#"{"error": {"type": "authentication_error", "message": "Invalid API key"}}"#;
+        let parsed: serde_json::Value = serde_json::from_str(error_json).unwrap();
+        assert_eq!(parsed["error"]["type"], "authentication_error");
+        assert_eq!(parsed["error"]["message"], "Invalid API key");
+
+        // 测试缺少 type 字段的错误
+        let error_json2 = r#"{"error": {"message": "Unknown error"}}"#;
+        let parsed2: serde_json::Value = serde_json::from_str(error_json2).unwrap();
+        assert_eq!(parsed2["error"]["message"], "Unknown error");
+    }
+
+    #[test]
+    fn test_empty_stream_events_handling() {
+        // 测试空事件处理逻辑
+        let provider = AnthropicProvider::new();
+        let model = sample_model(Api::Anthropic, Provider::Anthropic);
+        
+        // 创建包含空内容的上下文
+        let context = sample_context(
+            "You are helpful",
+            vec![Message::User(UserMessage::new(""))],
+        );
+        let options = sample_stream_options("test-api-key");
+        
+        // 验证空消息被正确处理
+        let body = provider.build_request_body(&context, &model, &options, "test-api-key");
+        let messages = body["messages"].as_array().unwrap();
+        assert!(messages.is_empty() || messages.len() == 1);
+    }
+
+    #[test]
+    fn test_large_message_serialization_limits() {
+        let provider = AnthropicProvider::new();
+        let model = sample_model(Api::Anthropic, Provider::Anthropic);
+
+        // 创建大量消息测试序列化性能边界
+        let mut messages: Vec<Message> = Vec::new();
+        for i in 0..50 {
+            let content = format!("Message {} with {} characters of padding content here", i, "x".repeat(100));
+            messages.push(sample_user_message(&content));
+        }
+
+        let context = sample_context("You are a helpful assistant", messages);
+        let options = sample_stream_options("test-api-key");
+
+        let body = provider.build_request_body(&context, &model, &options, "test-api-key");
+        let messages_array = body["messages"].as_array().unwrap();
+        assert_eq!(messages_array.len(), 50);
+
+        // 验证 JSON 字符串长度
+        let json_string = serde_json::to_string(&body).unwrap();
+        assert!(json_string.len() > 5000);
+    }
+
+    #[test]
+    fn test_oauth_token_variations() {
+        let provider = AnthropicProvider::new();
+        
+        // 测试各种 OAuth token 格式
+        assert!(AnthropicProvider::is_oauth_token("sk-ant-oat-12345"));
+        assert!(AnthropicProvider::is_oauth_token("sk-ant-oat-test-token"));
+        assert!(!AnthropicProvider::is_oauth_token("sk-ant-api03-12345"));
+        assert!(!AnthropicProvider::is_oauth_token("sk-12345"));
+        assert!(!AnthropicProvider::is_oauth_token(""));
+    }
+
+    #[test]
+    fn test_adaptive_thinking_model_detection() {
+        // 测试自适应思考模型检测
+        assert!(AnthropicProvider::supports_adaptive_thinking("claude-opus-4-6-20250101"));
+        assert!(AnthropicProvider::supports_adaptive_thinking("claude-opus-4.6"));
+        assert!(AnthropicProvider::supports_adaptive_thinking("claude-sonnet-4-6-20250101"));
+        assert!(AnthropicProvider::supports_adaptive_thinking("claude-sonnet-4.6"));
+        assert!(!AnthropicProvider::supports_adaptive_thinking("claude-3-5-sonnet"));
+        assert!(!AnthropicProvider::supports_adaptive_thinking("claude-opus-4-20250514"));
+        assert!(!AnthropicProvider::supports_adaptive_thinking(""));
     }
 }

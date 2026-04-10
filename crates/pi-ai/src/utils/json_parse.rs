@@ -253,15 +253,10 @@ impl StreamingJsonParser {
         
         // 尝试解析缓冲区中的完整 JSON 对象
         // 注意：这里使用严格的解析，不尝试修复不完整的 JSON
-        loop {
-            // 尝试找到完整的 JSON 对象
-            if let Some((value, consumed)) = Self::try_extract_json(&self.buffer) {
-                results.push(value);
-                // 移除已解析的部分
-                self.buffer.drain(..consumed);
-            } else {
-                break;
-            }
+        while let Some((value, consumed)) = Self::try_extract_json(&self.buffer) {
+            results.push(value);
+            // 移除已解析的部分
+            self.buffer.drain(..consumed);
         }
         
         results

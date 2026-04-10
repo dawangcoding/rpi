@@ -20,6 +20,12 @@ pub struct CounterExtension {
     message_count: Arc<AtomicUsize>,
 }
 
+impl Default for CounterExtension {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CounterExtension {
     pub fn new() -> Self {
         Self {

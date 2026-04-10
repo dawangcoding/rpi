@@ -53,7 +53,7 @@ impl ReadTool {
     }
 
     /// 检测文件是否为图片
-    fn detect_image_mime_type(&self, path: &PathBuf) -> Option<&'static str> {
+    fn detect_image_mime_type(&self, path: &std::path::Path) -> Option<&'static str> {
         let ext = path.extension()?.to_str()?.to_lowercase();
         match ext.as_str() {
             "jpg" | "jpeg" => Some("image/jpeg"),
@@ -182,7 +182,8 @@ impl AgentTool for ReadTool {
             
             let max_lines_to_read = limit.unwrap_or(DEFAULT_MAX_LINES);
             let mut collected = Vec::with_capacity(max_lines_to_read.min(10000));
-            let mut line_count = 0usize;
+            // line_count 用于潜在的未来功能
+            let _line_count = 0usize;
             
             // 如果有 offset，先跳过前面的行
             let skip_lines = offset.map(|o| o.saturating_sub(1)).unwrap_or(0);
@@ -196,7 +197,7 @@ impl AgentTool for ReadTool {
             
             // 读取需要的行
             while let Some(line) = lines.next_line().await? {
-                line_count += 1;
+                let _ = _line_count;
                 collected.push(line);
                 
                 if collected.len() >= max_lines_to_read {
@@ -240,7 +241,7 @@ impl AgentTool for ReadTool {
         
         if is_large_file {
             // 大文件：all_lines 已经是从 offset 开始的内容
-            start_line_display = offset.map(|o| o).unwrap_or(1);
+            start_line_display = offset.unwrap_or(1);
             let selected: Vec<&str> = all_lines.iter().map(|s| s.as_str()).collect();
             selected_content = selected.join("\n");
             user_limited_lines = all_lines.len();

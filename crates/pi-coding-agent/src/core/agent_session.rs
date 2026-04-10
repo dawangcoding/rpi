@@ -58,6 +58,7 @@ pub struct AgentSessionConfig {
 }
 
 /// Agent 会话
+#[allow(dead_code)] // 多个字段和方法供未来扩展使用
 pub struct AgentSession {
     agent: Agent,
     config: AgentSessionConfig,
@@ -71,6 +72,7 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
+    #![allow(dead_code)] // 多个方法供未来扩展使用
     /// 创建新会话
     pub async fn new(config: AgentSessionConfig) -> anyhow::Result<Self> {
         let session_id = config.session_id.clone()
@@ -180,7 +182,7 @@ impl AgentSession {
         // ========================================
         let stats_clone = stats.clone();
         let model_cost = config.model.cost.clone();
-        agent.subscribe(Arc::new(move |event: AgentEvent, _cancel: CancellationToken| {
+        let _ = agent.subscribe(Arc::new(move |event: AgentEvent, _cancel: CancellationToken| {
             let stats = stats_clone.clone();
             let model_cost = model_cost.clone();
             tokio::spawn(async move {
@@ -494,6 +496,7 @@ impl AgentSession {
 }
 
 /// 创建 AgentSession 的 Builder 模式
+#[allow(dead_code)] // Builder 模式供未来扩展使用
 pub struct AgentSessionBuilder {
     model: Option<Model>,
     thinking_level: ThinkingLevel,
@@ -525,6 +528,7 @@ impl Default for AgentSessionBuilder {
 }
 
 impl AgentSessionBuilder {
+    #![allow(dead_code)] // Builder 方法供未来扩展使用
     pub fn new() -> Self {
         Self::default()
     }

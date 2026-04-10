@@ -75,8 +75,8 @@ impl ContextWindowManager {
         // 将 AgentMessage 转换为 Message
         let llm_messages: Vec<Message> = messages
             .iter()
-            .filter_map(|m| match m {
-                AgentMessage::Llm(msg) => Some(msg.clone()),
+            .map(|m| match m {
+                AgentMessage::Llm(msg) => msg.clone(),
             })
             .collect();
 
@@ -121,8 +121,8 @@ impl ContextWindowManager {
         // 计算当前 token 数
         let llm_messages: Vec<Message> = messages
             .iter()
-            .filter_map(|m| match m {
-                AgentMessage::Llm(msg) => Some(msg.clone()),
+            .map(|m| match m {
+                AgentMessage::Llm(msg) => msg.clone(),
             })
             .collect();
         let current_tokens = self.token_counter.count_messages(&llm_messages);
@@ -212,6 +212,7 @@ impl ContextWindowManager {
 
 /// 消息类型分类
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // 预留枚举变体供未来使用
 enum MessageType {
     System,
     User,

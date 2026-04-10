@@ -164,6 +164,7 @@ pub fn truncate_line(line: &str, max_chars: usize) -> (String, bool) {
 
 /// 流式截断结果
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[allow(dead_code)] // 预留结构体供未来使用
 pub struct StreamingTruncationResult {
     pub content: String,
     pub was_truncated: bool,
@@ -174,6 +175,7 @@ pub struct StreamingTruncationResult {
 
 /// 从文件流中按行截断，无需全量加载到内存
 /// 适用于超大文件的处理
+#[allow(dead_code)] // 预留函数供未来使用
 pub async fn truncate_file_streaming(
     path: &std::path::Path,
     max_lines: usize,

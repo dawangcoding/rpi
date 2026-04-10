@@ -135,7 +135,7 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
     // 3. 设置事件通道（agent 事件 -> UI 更新）
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
     let tx = event_tx.clone();
-    session.agent().subscribe(Arc::new(move |event: AgentEvent, _cancel| {
+    let _ = session.agent().subscribe(Arc::new(move |event: AgentEvent, _cancel| {
         let _ = tx.send(event);
     }));
 
@@ -363,7 +363,7 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                     if let Some(end_idx) = text.find("\x1b[201~") {
                         // 粘贴在单个数据包中完成
                         let pasted = &text[content_start..end_idx];
-                        handle_paste(&pasted.to_string(), &mut editor, &mut stdout, &terminal)?;
+                        handle_paste(pasted, &mut editor, &mut stdout, &terminal)?;
                     } else {
                         // 粘贴跨多个数据包，开始缓冲
                         paste_buffer = Some(text[content_start..].to_string());
@@ -726,7 +726,7 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                             }
                             "info" => {
                                 // 显示扩展详情
-                                let ext_name = sub_cmd.splitn(2, ' ').nth(1).unwrap_or("").trim();
+                                let ext_name = sub_cmd.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                                 if ext_name.is_empty() {
                                     message_history.add_system_message("Usage: /extensions info <name>".to_string());
                                 } else {
@@ -750,7 +750,7 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                             }
                             "enable" => {
                                 // 启用扩展（下次重启生效）
-                                let ext_name = sub_cmd.splitn(2, ' ').nth(1).unwrap_or("").trim();
+                                let ext_name = sub_cmd.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                                 if ext_name.is_empty() {
                                     message_history.add_system_message("Usage: /extensions enable <name>".to_string());
                                 } else {
@@ -763,7 +763,7 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                             }
                             "disable" => {
                                 // 禁用扩展（下次重启生效）
-                                let ext_name = sub_cmd.splitn(2, ' ').nth(1).unwrap_or("").trim();
+                                let ext_name = sub_cmd.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                                 if ext_name.is_empty() {
                                     message_history.add_system_message("Usage: /extensions disable <name>".to_string());
                                 } else {
@@ -1055,10 +1055,10 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                         
                         let (term_width, _) = terminal.size();
                         render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
-                    } else if prompt.starts_with("/") {
+                    } else if let Some(stripped) = prompt.strip_prefix('/') {
                         // 尝试从扩展查找命令
-                        let cmd_name = prompt[1..].split_whitespace().next().unwrap_or("");
-                        let cmd_args_str = prompt[1..].trim_start().splitn(2, ' ').nth(1).unwrap_or("").to_string();
+                        let cmd_name = stripped.split_whitespace().next().unwrap_or("");
+                        let cmd_args_str = stripped.trim_start().split_once(' ').map(|x| x.1).unwrap_or("").to_string();
                         
                         let ext_commands = session.extension_manager().get_all_commands();
                         let found_cmd = ext_commands.into_iter().find(|c| c.matches(cmd_name));

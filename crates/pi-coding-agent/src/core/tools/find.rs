@@ -59,7 +59,7 @@ impl FindTool {
     }
 
     /// 获取相对路径
-    fn get_relative_path(&self, path: &PathBuf, base: &PathBuf) -> String {
+    fn get_relative_path(&self, path: &std::path::Path, base: &std::path::Path) -> String {
         path.strip_prefix(base)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| path.file_name().unwrap_or_default().to_string_lossy().to_string())
@@ -185,7 +185,7 @@ impl AgentTool for FindTool {
 
                     if matcher.is_match(&file_name) {
                         // 获取相对路径
-                        let rel_path = self.get_relative_path(&path.to_path_buf(), &absolute_path);
+                        let rel_path = self.get_relative_path(path, &absolute_path);
                         
                         // 目录添加斜杠后缀
                         let display_path = if path.is_dir() && !rel_path.ends_with('/') {

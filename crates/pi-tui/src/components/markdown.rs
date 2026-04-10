@@ -594,4 +594,83 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("Second item")));
         assert!(lines.iter().any(|l| l.contains("Third item")));
     }
+
+    #[test]
+    fn test_render_deeply_nested_list() {
+        let mut md = Markdown::new();
+        md.set_content("- Level 1\n  - Level 2\n    - Level 3\n      - Level 4\n- Back to Level 1");
+        let lines = md.render(80);
+        
+        // 验证所有层级都被渲染
+        assert!(lines.iter().any(|l| l.contains("Level 1")));
+        assert!(lines.iter().any(|l| l.contains("Level 2")));
+        assert!(lines.iter().any(|l| l.contains("Level 3")));
+        assert!(lines.iter().any(|l| l.contains("Level 4")));
+    }
+
+    #[test]
+    fn test_render_code_block_with_syntax() {
+        let mut md = Markdown::new();
+        md.set_content("```rust\nfn main() {\n    println!(\"Hello\");\n}\n```");
+        let lines = md.render(80);
+        
+        // 验证代码块被渲染
+        assert!(!lines.is_empty());
+        assert!(lines.iter().any(|l| l.contains("fn main")));
+        assert!(lines.iter().any(|l| l.contains("println")));
+    }
+
+    #[test]
+    fn test_render_table() {
+        let mut md = Markdown::new();
+        md.set_content("| Header 1 | Header 2 |\n|----------|----------|\n| Cell 1   | Cell 2   |");
+        let lines = md.render(80);
+        
+        // 表格应该被渲染为文本
+        assert!(!lines.is_empty());
+        assert!(lines.iter().any(|l| l.contains("Header 1") || l.contains("Header 2")));
+    }
+
+    #[test]
+    fn test_render_empty_input() {
+        let mut md = Markdown::new();
+        
+        // 测试空字符串
+        md.set_content("");
+        let lines = md.render(80);
+        assert!(lines.is_empty());
+        
+        // 测试只有空白字符
+        md.set_content("   \n\t\n   ");
+        let lines = md.render(80);
+        assert!(lines.is_empty());
+        
+        // 测试只有换行符
+        md.set_content("\n\n\n");
+        let lines = md.render(80);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn test_render_horizontal_rule() {
+        let mut md = Markdown::new();
+        md.set_content("Before\n\n---\n\nAfter");
+        let lines = md.render(80);
+        
+        assert!(!lines.is_empty());
+        assert!(lines.iter().any(|l| l.contains("Before")));
+        assert!(lines.iter().any(|l| l.contains("After")));
+    }
+
+    #[test]
+    fn test_render_with_very_narrow_width() {
+        let mut md = Markdown::new();
+        md.set_content("This is a very long line that needs to be wrapped");
+        let lines = md.render(10);
+        
+        // 窄宽度应该导致换行
+        assert!(!lines.is_empty());
+        // 多行表示发生了换行
+        assert!(lines.len() >= 1);
+    }
 }

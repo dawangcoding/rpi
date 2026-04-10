@@ -18,6 +18,7 @@ impl ExtensionLoader {
         Self { extensions_dir }
     }
     
+    #[allow(dead_code)]
     pub fn with_dir(extensions_dir: PathBuf) -> Self {
         Self { extensions_dir }
     }
@@ -92,6 +93,7 @@ pub trait ExtensionFactory: Send + Sync {
     /// 创建扩展实例
     fn create(&self) -> Box<dyn Extension>;
     /// 扩展描述
+    #[allow(dead_code)]
     fn description(&self) -> &str { "" }
 }
 
@@ -115,6 +117,7 @@ impl ExtensionRegistry {
     }
     
     /// 列出所有可用的扩展名称
+    #[allow(dead_code)]
     pub fn available_extensions(&self) -> Vec<&str> {
         self.factories.keys().map(|s| s.as_str()).collect()
     }
@@ -170,6 +173,7 @@ impl ExtensionRegistry {
     }
     
     /// 获取注册的工厂数量
+    #[allow(dead_code)]
     pub fn factory_count(&self) -> usize {
         self.factories.len()
     }

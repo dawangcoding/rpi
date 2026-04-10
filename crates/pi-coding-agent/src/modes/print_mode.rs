@@ -45,7 +45,7 @@ pub async fn run(config: PrintConfig) -> anyhow::Result<()> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
     
     let tx = event_tx.clone();
-    session.agent().subscribe(Arc::new(move |event: AgentEvent, _cancel| {
+    let _ = session.agent().subscribe(Arc::new(move |event: AgentEvent, _cancel| {
         let _ = tx.send(event);
     }));
     

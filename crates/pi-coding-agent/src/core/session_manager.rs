@@ -117,6 +117,7 @@ impl SessionManager {
     }
     
     /// 从指定路径加载会话
+    #[allow(dead_code)] // 预留方法供未来使用
     pub async fn load_session_from_path(path: &Path) -> anyhow::Result<SavedSession> {
         let json = tokio::fs::read_to_string(path).await?;
         Ok(serde_json::from_str(&json)?)
@@ -152,6 +153,7 @@ impl SessionManager {
     }
     
     /// 检查会话是否存在
+    #[allow(dead_code)] // 预留方法供未来使用
     pub fn session_exists(&self, session_id: &str) -> bool {
         self.session_path(session_id).exists()
     }
@@ -314,6 +316,7 @@ impl SessionManager {
     }
     
     /// 查找最近的会话
+    #[allow(dead_code)] // 预留方法供未来使用
     pub async fn find_most_recent(&self) -> anyhow::Result<Option<SessionMetadata>> {
         let sessions = self.list_sessions().await?;
         Ok(sessions.into_iter().next())
@@ -478,6 +481,7 @@ fn extract_model(messages: &[AgentMessage]) -> String {
 
 /// 会话过滤器
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // 预留结构体供未来使用
 pub struct SessionFilter {
     pub model: Option<String>,
     pub before: Option<i64>,
@@ -486,6 +490,7 @@ pub struct SessionFilter {
 
 impl SessionManager {
     /// 列出会话（带过滤）
+    #[allow(dead_code)] // 预留方法供未来使用
     pub async fn list_sessions_filtered(&self, filter: &SessionFilter) -> anyhow::Result<Vec<SessionMetadata>> {
         let all_sessions = self.list_sessions().await?;
         

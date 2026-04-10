@@ -97,6 +97,7 @@ pub struct Editor {
 
     // 视口
     scroll_row: usize,
+    #[allow(dead_code)]
     scroll_col: usize,
 
     // 撤销/重做
@@ -118,6 +119,7 @@ pub struct Editor {
     needs_render: bool,
 
     // 渲染缓存
+    #[allow(dead_code)]
     last_width: u16,
 
     // 最后操作类型（用于撤销分组）
@@ -895,6 +897,7 @@ impl Editor {
     }
 
     /// 确保光标可见
+    #[allow(dead_code)]
     fn ensure_visible(&mut self, height: u16) {
         if self.cursor_row < self.scroll_row {
             self.scroll_row = self.cursor_row;
@@ -904,11 +907,13 @@ impl Editor {
     }
 
     /// 获取当前行
+    #[allow(dead_code)]
     fn current_line(&self) -> &str {
         &self.lines[self.cursor_row]
     }
 
     /// 获取当前行的可变引用
+    #[allow(dead_code)]
     fn current_line_mut(&mut self) -> &mut String {
         &mut self.lines[self.cursor_row]
     }
@@ -1088,10 +1093,11 @@ impl Component for Editor {
         }
 
         // 显示占位符
-        if self.is_empty() && self.config.placeholder.is_some() && !self.focused {
-            let placeholder = self.config.placeholder.as_ref().unwrap();
-            let line = format!("\x1b[90m{}\x1b[0m", placeholder);
-            lines.push(line);
+        if self.is_empty() && !self.focused {
+            if let Some(placeholder) = self.config.placeholder.as_ref() {
+                let line = format!("\x1b[90m{}\x1b[0m", placeholder);
+                lines.push(line);
+            }
         }
 
         // 添加自动完成弹出菜单
@@ -1635,4 +1641,84 @@ fn test_editor_redo_debug() {
     
     editor.redo();
     println!("After editor.redo(): text='{}'", editor.get_text());
+}
+
+#[test]
+fn test_editor_empty_content_render() {
+    let editor = Editor::new(EditorConfig::default());
+    
+    // 测试空内容渲染
+    let lines = editor.render(80);
+    assert!(!lines.is_empty());
+    
+    // 空编辑器应该至少有一行
+    assert!(lines.len() >= 1);
+}
+
+#[test]
+fn test_editor_unicode_wide_chars() {
+    let mut editor = Editor::new(EditorConfig::default());
+    
+    // 测试 Unicode 宽字符（如中文、emoji）
+    editor.insert_text("Hello 世界 🎉");
+    assert_eq!(editor.get_text(), "Hello 世界 🎉");
+    
+    // 测试渲染
+    let lines = editor.render(80);
+    assert!(!lines.is_empty());
+    
+    // 测试光标移动
+    editor.move_end();
+    let (row, col) = editor.cursor_position();
+    assert_eq!(row, 0);
+    // 列位置应该考虑字符宽度
+    assert!(col > 0);
+}
+
+#[test]
+fn test_editor_mixed_unicode_ascii() {
+    let mut editor = Editor::new(EditorConfig::default());
+    
+    // 混合 ASCII 和 Unicode 字符
+    editor.insert_text("Test: 测试");
+    editor.new_line();
+    editor.insert_text("Emoji: 🎉🎊");
+    
+    assert_eq!(editor.line_count(), 2);
+    let text = editor.get_text();
+    assert!(text.contains("测试"));
+    assert!(text.contains("🎉"));
+}
+
+#[test]
+fn test_editor_render_with_placeholder() {
+    let config = EditorConfig {
+        placeholder: Some("Enter text here...".to_string()),
+        ..Default::default()
+    };
+    let editor = Editor::new(config);
+    
+    // 空编辑器应该显示占位符
+    let lines = editor.render(80);
+    assert!(!lines.is_empty());
+}
+
+#[test]
+fn test_editor_cursor_with_unicode() {
+    let mut editor = Editor::new(EditorConfig::default());
+    
+    editor.insert_text("中文字符");
+    
+    // 移动到开头
+    editor.move_home();
+    let (row, col) = editor.cursor_position();
+    assert_eq!(row, 0);
+    assert_eq!(col, 0);
+    
+    // 移动到结尾
+    editor.move_end();
+    let (row, col) = editor.cursor_position();
+    assert_eq!(row, 0);
+    // 应该位于最后一个字符之后
+    assert!(col >= 4); // 4 个中文字符
 }

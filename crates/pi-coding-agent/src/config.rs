@@ -89,6 +89,7 @@ impl AppConfig {
     }
 
     /// 保存配置
+    #[allow(dead_code)] // 预留方法供未来使用
     pub fn save(&self) -> anyhow::Result<()> {
         let config_path = Self::config_path();
 
@@ -155,6 +156,7 @@ impl AppConfig {
     /// 异步获取 API Key，支持自动 token 刷新
     /// 
     /// 与 get_api_key 的区别：此方法会在 token 即将过期时自动尝试刷新
+    #[allow(dead_code)] // 预留方法供未来使用
     pub async fn get_api_key_async(&self, provider: &str) -> Option<String> {
         // 1. 先检查 OAuth token 存储（带自动刷新）
         let token_storage = crate::core::auth::TokenStorage::new();
@@ -223,11 +225,13 @@ impl AppConfig {
 }
 
 /// 获取项目目录
+#[allow(dead_code)] // 预留函数供未来使用
 pub fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("com", "pi", "pi")
 }
 
 /// 确保目录存在
+#[allow(dead_code)] // 预留函数供未来使用
 pub fn ensure_dir(path: &Path) -> anyhow::Result<()> {
     if !path.exists() {
         std::fs::create_dir_all(path)?;

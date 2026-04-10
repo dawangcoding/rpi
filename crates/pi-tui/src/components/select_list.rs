@@ -46,6 +46,7 @@ pub struct SelectList {
     focused: bool,
     needs_render: bool,
     max_visible: usize,
+    #[allow(clippy::type_complexity)]
     on_select: Option<Box<dyn Fn(&SelectItem) + Send>>,
 }
 
@@ -231,11 +232,7 @@ impl SelectList {
                         "",
                     );
 
-                    if is_selected {
-                        format!("{}{}{}{}", prefix, truncated_label, spacing, truncated_desc)
-                    } else {
-                        format!("{}{}{}{}", prefix, truncated_label, spacing, truncated_desc)
-                    }
+                    format!("{}{}{}{}", prefix, truncated_label, spacing, truncated_desc)
                 } else {
                     // 空间不足，只显示标签
                     let truncated = truncate_to_width_with_ellipsis(&item.label, available_width, "");

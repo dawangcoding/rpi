@@ -7,6 +7,7 @@ use super::types::SlashCommand;
 
 /// 扩展专用日志记录器
 #[derive(Clone)]
+#[allow(dead_code)] // 扩展 API 方法供扩展开发者使用
 pub struct ExtensionLogger {
     prefix: String,
 }
@@ -20,14 +21,17 @@ impl ExtensionLogger {
         tracing::info!("[{}] {}", self.prefix, msg);
     }
     
+    #[allow(dead_code)]
     pub fn warn(&self, msg: &str) {
         tracing::warn!("[{}] {}", self.prefix, msg);
     }
     
+    #[allow(dead_code)]
     pub fn error(&self, msg: &str) {
         tracing::error!("[{}] {}", self.prefix, msg);
     }
     
+    #[allow(dead_code)]
     pub fn debug(&self, msg: &str) {
         tracing::debug!("[{}] {}", self.prefix, msg);
     }
@@ -35,6 +39,7 @@ impl ExtensionLogger {
 
 /// 提供给扩展使用的 API 上下文
 #[derive(Clone)]
+#[allow(dead_code)] // 扩展 API 字段和方法供扩展开发者使用
 pub struct ExtensionContext {
     /// 当前工作目录
     pub cwd: PathBuf,
@@ -42,7 +47,7 @@ pub struct ExtensionContext {
     pub config: AppConfig,
     /// 当前会话 ID
     pub session_id: String,
-    /// 扩展数据目录（~/.pi/extensions/<name>/data/）
+    /// 扩展数据目录（`~/.pi/extensions/<name>/data/`）
     pub data_dir: PathBuf,
     /// 日志前缀（扩展名称）
     pub log_prefix: String,
@@ -89,23 +94,27 @@ impl ExtensionContext {
     }
     
     /// 注册一个自定义工具
+    #[allow(dead_code)]
     pub async fn register_tool(&self, tool: Arc<dyn AgentTool>) {
         tracing::info!("[{}] Registering tool: {}", self.log_prefix, tool.name());
         self.tool_registry.write().await.push(tool);
     }
     
     /// 注册一个 Slash 命令
+    #[allow(dead_code)]
     pub async fn register_command(&self, command: SlashCommand) {
         tracing::info!("[{}] Registering command: /{}", self.log_prefix, command.name);
         self.command_registry.write().await.push(command);
     }
     
     /// 获取已注册的工具
+    #[allow(dead_code)]
     pub async fn registered_tools(&self) -> Vec<Arc<dyn AgentTool>> {
         self.tool_registry.read().await.clone()
     }
     
     /// 获取已注册的命令
+    #[allow(dead_code)]
     pub async fn registered_commands(&self) -> Vec<SlashCommand> {
         self.command_registry.read().await.clone()
     }
@@ -122,6 +131,7 @@ impl ExtensionContext {
     }
     
     /// 写入扩展私有数据
+    #[allow(dead_code)]
     pub fn write_data(&self, key: &str, value: &str) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.data_dir)?;
         let file_path = self.data_dir.join(format!("{}.dat", key));

@@ -24,6 +24,7 @@ pub enum PermissionLevel {
 
 /// 权限检查结果
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // 预留枚举供未来使用
 pub enum PermissionCheckResult {
     /// 允许执行
     Allowed,
@@ -82,12 +83,14 @@ fn default_blocked_commands() -> Vec<String> {
 }
 
 /// 权限管理器
+#[allow(dead_code)] // 字段和方法供未来权限控制功能使用
 pub struct PermissionManager {
     config: ToolPermissionConfig,
     granted_tools: HashSet<String>,
 }
 
 impl PermissionManager {
+    #![allow(dead_code)] // 多个方法供未来扩展使用
     /// 创建新的权限管理器
     pub fn new(config: ToolPermissionConfig) -> Self {
         Self {

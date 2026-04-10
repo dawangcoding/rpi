@@ -12,6 +12,7 @@ use super::html_template::{CSS_STYLES, HTML_FOOTER, HTML_HEADER, JS_CODE};
 
 /// 导出主题
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(dead_code)] // Dark 主题供未来使用
 pub enum ExportTheme {
     #[default]
     Light,
@@ -29,6 +30,7 @@ impl ExportTheme {
 
 /// HTML 导出器
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // 字段供未来扩展使用
 pub struct HtmlExporter {
     theme: ExportTheme,
     include_stats: bool,
@@ -52,18 +54,21 @@ impl HtmlExporter {
     }
 
     /// 设置主题
+    #[allow(dead_code)]
     pub fn with_theme(mut self, theme: ExportTheme) -> Self {
         self.theme = theme;
         self
     }
 
     /// 设置是否包含统计信息
+    #[allow(dead_code)]
     pub fn with_stats(mut self, include: bool) -> Self {
         self.include_stats = include;
         self
     }
 
     /// 设置是否折叠工具调用
+    #[allow(dead_code)]
     pub fn with_collapse_tool_calls(mut self, collapse: bool) -> Self {
         self.collapse_tool_calls = collapse;
         self

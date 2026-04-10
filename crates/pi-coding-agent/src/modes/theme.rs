@@ -4,6 +4,7 @@
 
 /// 文本样式 - ANSI 转义序列
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // 主题字段供未来 UI 使用
 pub struct TextStyle {
     pub prefix: String,   // ANSI 开始序列
     pub suffix: String,   // ANSI 结束序列（通常是 \x1b[0m）
@@ -18,6 +19,7 @@ impl TextStyle {
     }
     
     /// 应用样式到文本
+    #[allow(dead_code)] // 预留方法供未来使用
     pub fn apply(&self, text: &str) -> String {
         format!("{}{}{}", self.prefix, text, self.suffix)
     }
@@ -31,6 +33,7 @@ impl Default for TextStyle {
 
 /// 消息样式
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // 主题字段供未来 UI 使用
 pub struct MessageStyle {
     pub title: TextStyle,       // 标题行样式（如 "👤 You"）
     pub content: TextStyle,     // 内容样式
@@ -38,6 +41,7 @@ pub struct MessageStyle {
 
 /// 工具调用样式
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // 主题字段供未来 UI 使用
 pub struct ToolCallStyle {
     pub running: TextStyle,     // 运行中
     pub success: TextStyle,     // 成功
@@ -46,12 +50,14 @@ pub struct ToolCallStyle {
 
 /// 状态栏样式
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // 主题字段供未来 UI 使用
 pub struct StatusBarStyle {
     pub background: TextStyle,  // 背景色 + 前景色
 }
 
 /// 主题定义
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // 主题字段供未来 UI 使用
 pub struct Theme {
     pub name: String,
     pub user_message: MessageStyle,

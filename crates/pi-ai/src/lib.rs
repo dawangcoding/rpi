@@ -1,3 +1,41 @@
+//! LLM 统一 API 层
+//!
+//! pi-ai 提供统一的 LLM API 抽象层，支持多 Provider 流式调用。
+//!
+//! # 支持的 Provider
+//!
+//! - **Anthropic**: Claude 系列模型（原生 API）
+//! - **OpenAI**: GPT 系列模型（ChatCompletions API）
+//! - **Google**: Gemini 系列模型
+//! - **Mistral**: Mistral 系列模型
+//! - **Amazon Bedrock**: AWS Bedrock 托管模型
+//! - **Azure OpenAI**: Azure 托管的 OpenAI 模型
+//! - **XAI**: Grok 系列模型
+//! - **OpenRouter**: OpenRouter 聚合服务
+//!
+//! # 核心功能
+//!
+//! - **流式 API**: 通过 [`stream()`] 函数获取实时响应流
+//! - **非流式 API**: 通过 [`complete()`] 函数获取完整响应
+//! - **Provider 注册**: 通过 [`ApiRegistry`] 管理多个 Provider 实现
+//! - **Token 计数**: 提供 [`TokenCounter`] trait 和多种实现
+//! - **模型管理**: 内置模型列表和成本计算
+//!
+//! # 示例
+//!
+//! ```ignore
+//! use pi_ai::{stream, Context, StreamOptions};
+//!
+//! let context = Context::new(vec![Message::User(UserMessage::new("Hello"))]);
+//! let model = pi_ai::get_model("claude-sonnet-4-20250514").unwrap();
+//! let options = StreamOptions::default();
+//!
+//! let mut event_stream = stream(&context, &model, &options).await?;
+//! while let Some(event) = event_stream.next().await {
+//!     // 处理流式事件
+//! }
+//! ```
+
 pub mod types;
 pub mod api_registry;
 pub mod stream;

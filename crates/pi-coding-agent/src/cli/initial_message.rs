@@ -7,6 +7,7 @@ use pi_ai::types::*;
 use std::path::Path;
 
 /// 从 CLI 参数构建初始用户消息
+#[allow(dead_code)] // 预留函数供未来使用
 pub fn build_initial_message(
     prompt: &str,
     files: &[String],
@@ -40,6 +41,7 @@ pub fn build_initial_message(
 }
 
 /// 构建简单的文本初始消息
+#[allow(dead_code)] // 预留函数供未来使用
 pub fn build_simple_message(prompt: &str) -> AgentMessage {
     AgentMessage::user(prompt)
 }

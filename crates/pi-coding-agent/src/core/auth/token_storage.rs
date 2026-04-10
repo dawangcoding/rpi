@@ -35,6 +35,7 @@ impl StoredToken {
 pub struct TokenStorage {
     storage: Box<dyn SecureStorage>,
     /// 保留旧路径用于迁移检测
+    #[allow(dead_code)] // 用于检测旧文件迁移
     legacy_path: PathBuf,
 }
 
@@ -296,6 +297,7 @@ impl TokenStorage {
     }
     
     /// 用于测试的自定义路径构造器
+    #[allow(dead_code)] // 用于测试
     pub(crate) fn with_storage(storage: Box<dyn SecureStorage>) -> Self {
         Self {
             storage,

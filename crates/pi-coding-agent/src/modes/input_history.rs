@@ -3,6 +3,7 @@
 //! 记录用户输入历史，支持 Up/Down 键导航。
 
 /// 输入历史管理器
+#[allow(dead_code)] // 多个方法供未来 UI 扩展使用
 pub struct InputHistory {
     /// 历史条目列表（最新在末尾）
     entries: Vec<String>,
@@ -76,6 +77,7 @@ impl InputHistory {
     /// 
     /// 返回要显示的内容，可能是历史条目或保存的草稿
     /// None 表示已在最新位置
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<&str> {
         if self.cursor >= self.entries.len() {
             return None; // 已在最新位置
@@ -98,16 +100,19 @@ impl InputHistory {
     }
     
     /// 是否正在浏览历史
+    #[allow(dead_code)]
     pub fn is_browsing(&self) -> bool {
         self.cursor < self.entries.len()
     }
     
     /// 获取历史条目数
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
     
     /// 是否为空
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

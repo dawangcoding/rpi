@@ -8,6 +8,7 @@ use pi_tui::tui::Component;
 use pi_tui::utils::{wrap_text_with_ansi, visible_width};
 
 /// 用户消息组件
+#[allow(dead_code)] // 多个方法供未来 UI 扩展使用
 pub struct UserMessageComponent {
     content: String,
     edited: bool,
@@ -25,6 +26,7 @@ impl UserMessageComponent {
     }
 
     /// 设置编辑标记
+    #[allow(dead_code)]
     pub fn set_edited(&mut self, edited: bool) {
         self.edited = edited;
         self.needs_render = true;
@@ -58,6 +60,7 @@ impl Component for UserMessageComponent {
 }
 
 /// 工具调用显示组件
+#[allow(dead_code)] // 多个字段和方法供未来 UI 扩展使用
 pub struct ToolCallDisplayComponent {
     tool_name: String,
     call_id: String,
@@ -91,6 +94,7 @@ impl ToolCallDisplayComponent {
     }
 
     /// 切换折叠状态
+    #[allow(dead_code)]
     pub fn toggle_collapse(&mut self) {
         self.collapsed = !self.collapsed;
         self.needs_render = true;
@@ -187,6 +191,7 @@ impl AssistantMessageComponent {
     }
 
     /// 更新工具调用状态（通过 call_id）
+    #[allow(dead_code)] // 预留方法供未来使用
     pub fn update_tool_call(&mut self, call_id: &str, is_error: bool, duration_ms: Option<u64>) {
         for tool_call in &mut self.tool_calls {
             if tool_call.call_id() == call_id {
@@ -216,6 +221,7 @@ impl AssistantMessageComponent {
     }
 
     /// 切换思考内容折叠
+    #[allow(dead_code)] // 预留方法供未来使用
     pub fn toggle_thinking(&mut self) {
         self.thinking_collapsed = !self.thinking_collapsed;
         self.needs_render = true;
@@ -325,6 +331,7 @@ impl StatusBarComponent {
     }
 
     /// 设置会话名
+    #[allow(dead_code)] // 预留方法供未来使用
     pub fn set_session_name(&mut self, name: String) {
         self.session_name = name;
         self.needs_render = true;
@@ -340,6 +347,7 @@ impl StatusBarComponent {
     }
 
     /// 更新加载动画帧
+    #[allow(dead_code)] // 预留方法供未来使用
     pub fn tick(&mut self) {
         if self.is_loading {
             self.loading_frame = (self.loading_frame + 1) % LOADING_FRAMES.len();

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 
 /// 扩展管理器 - 管理所有已加载扩展的生命周期
+#[allow(dead_code)] // 多个方法供扩展系统未来扩展使用
 pub struct ExtensionManager {
     extensions: Vec<Box<dyn Extension>>,
     activated: bool,
@@ -69,6 +70,7 @@ impl ExtensionManager {
     }
 
     /// 动态注册工具
+    #[allow(dead_code)]
     pub fn register_tool(&mut self, extension_name: &str, tool: Arc<dyn AgentTool>) {
         let wrapped = Arc::new(ExtensionToolWrapper::new(tool, extension_name.to_string()));
         self.dynamic_tools
@@ -83,6 +85,7 @@ impl ExtensionManager {
     }
 
     /// 取消注册工具
+    #[allow(dead_code)]
     pub fn unregister_tool(&mut self, extension_name: &str, tool_name: &str) {
         if let Some(tools) = self.dynamic_tools.get_mut(extension_name) {
             tools.retain(|t| t.name() != tool_name);
@@ -96,6 +99,7 @@ impl ExtensionManager {
     }
 
     /// 获取工具的来源扩展名称
+    #[allow(dead_code)]
     pub fn get_tool_source(&self, tool_name: &str) -> Option<String> {
         for (ext_name, tools) in &self.dynamic_tools {
             if tools.iter().any(|t| t.name() == tool_name) {
@@ -115,6 +119,7 @@ impl ExtensionManager {
     }
     
     /// 向所有扩展分发事件
+    #[allow(dead_code)]
     pub async fn dispatch_event(&self, event: &AgentEvent) -> Vec<EventResult> {
         let mut results = Vec::new();
         for ext in &self.extensions {
@@ -130,6 +135,7 @@ impl ExtensionManager {
     }
     
     /// 获取已注册扩展数量
+    #[allow(dead_code)]
     pub fn extension_count(&self) -> usize {
         self.extensions.len()
     }
@@ -140,6 +146,7 @@ impl ExtensionManager {
     }
     
     /// 是否已激活
+    #[allow(dead_code)]
     pub fn is_activated(&self) -> bool {
         self.activated
     }

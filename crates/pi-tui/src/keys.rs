@@ -1,7 +1,7 @@
 //! 键盘输入处理模块
 //!
 //! 支持标准 ANSI CSI 序列和 Kitty keyboard protocol
-//! 参考: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
+//! 参考: <https://sw.kovidgoyal.net/kitty/keyboard-protocol/>
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -244,11 +244,13 @@ fn is_symbol_key(c: char) -> bool {
 }
 
 /// 检查字符是否是拉丁字母
+#[allow(dead_code)] // 预留函数供未来使用
 fn is_latin_letter(c: char) -> bool {
     c.is_ascii_lowercase()
 }
 
 /// 检查字符是否是数字
+#[allow(dead_code)] // 预留函数供未来使用
 fn is_digit_key(c: char) -> bool {
     c.is_ascii_digit()
 }
@@ -259,6 +261,7 @@ fn is_digit_key(c: char) -> bool {
 
 /// 解析的事件类型
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // 解析结构体字段供未来使用
 struct ParsedKittySequence {
     codepoint: u32,
     shifted_key: Option<u32>,

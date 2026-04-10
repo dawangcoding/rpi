@@ -13,6 +13,7 @@ use crate::types::*;
 use crate::agent_loop::*;
 
 /// Agent 选项
+#[allow(clippy::type_complexity)] // 复杂类型是必要的，用于回调函数
 pub struct AgentOptions {
     pub model: Option<Model>,
     pub system_prompt: Option<String>,
@@ -97,15 +98,16 @@ fn default_model() -> Model {
 pub fn default_convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
     messages
         .iter()
-        .filter_map(|msg| match msg {
+        .map(|msg| match msg {
             AgentMessage::Llm(m) => match m {
-                Message::User(_) | Message::Assistant(_) | Message::ToolResult(_) => Some(m.clone()),
+                Message::User(_) | Message::Assistant(_) | Message::ToolResult(_) => m.clone(),
             },
         })
         .collect()
 }
 
 /// Agent 主结构体
+#[allow(clippy::type_complexity)] // 复杂类型是必要的，用于回调函数
 pub struct Agent {
     state: Arc<RwLock<AgentState>>,
     listeners: Arc<RwLock<Vec<Arc<dyn Fn(AgentEvent, CancellationToken) + Send + Sync>>>>,
@@ -537,11 +539,9 @@ impl Agent {
                     AgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
                         s.pending_tool_calls.remove(tool_call_id);
                     }
-                    AgentEvent::TurnEnd { message, .. } => {
-                        if let AgentMessage::Llm(Message::Assistant(assistant)) = message {
-                            if let Some(ref error) = assistant.error_message {
-                                s.error_message = Some(error.clone());
-                            }
+                    AgentEvent::TurnEnd { message: AgentMessage::Llm(Message::Assistant(assistant)), .. } => {
+                        if let Some(ref error) = assistant.error_message {
+                            s.error_message = Some(error.clone());
                         }
                     }
                     AgentEvent::AgentEnd { .. } => {

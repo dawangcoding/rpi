@@ -202,6 +202,7 @@ impl AgentContext {
 
 /// Agent 事件
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum AgentEvent {
     // Agent 生命周期
     BeforeAgentStart,

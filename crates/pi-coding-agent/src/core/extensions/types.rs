@@ -21,6 +21,7 @@ pub struct ExtensionManifest {
 
 /// 事件处理结果
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub enum EventResult {
     #[default]
     Continue,                    // 继续正常流程
@@ -47,6 +48,7 @@ pub trait Extension: Send + Sync {
     fn registered_commands(&self) -> Vec<SlashCommand>;
     
     /// 处理 Agent 事件（异步，可返回控制信号）
+    #[allow(dead_code)]
     async fn on_event(&self, event: &AgentEvent) -> anyhow::Result<EventResult> {
         let _ = event;
         Ok(EventResult::Continue)
@@ -55,8 +57,11 @@ pub trait Extension: Send + Sync {
 
 /// 命令来源
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum CommandSource {
+    #[allow(dead_code)]
     Builtin,
+    #[allow(dead_code)]
     Extension(String), // 扩展名称
 }
 
@@ -64,8 +69,10 @@ pub enum CommandSource {
 #[derive(Debug, Clone)]
 pub struct CommandArgs {
     /// 原始参数字符串
+    #[allow(dead_code)]
     pub raw: String,
     /// 分割后的参数列表
+    #[allow(dead_code)]
     pub parts: Vec<String>,
 }
 
@@ -77,11 +84,13 @@ impl CommandArgs {
     }
 
     /// 获取第一个参数
+    #[allow(dead_code)]
     pub fn first(&self) -> Option<&str> {
         self.parts.first().map(|s| s.as_str())
     }
 
     /// 是否为空
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.raw.trim().is_empty()
     }
@@ -104,6 +113,7 @@ impl CommandResult {
         }
     }
 
+    #[allow(dead_code)]
     pub fn silent() -> Self {
         Self {
             message: String::new(),
@@ -153,6 +163,7 @@ impl std::fmt::Debug for SlashCommand {
 }
 
 impl SlashCommand {
+    #[allow(dead_code)]
     pub fn new(name: impl Into<String>, description: impl Into<String>, handler: SlashCommandHandler) -> Self {
         Self {
             name: name.into(),
@@ -164,11 +175,13 @@ impl SlashCommand {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_usage(mut self, usage: impl Into<String>) -> Self {
         self.usage = Some(usage.into());
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_aliases(mut self, aliases: Vec<String>) -> Self {
         self.aliases = aliases;
         self
@@ -200,6 +213,7 @@ impl SlashCommand {
 }
 
 /// 扩展工具包装器 - 带来源和权限信息
+#[allow(dead_code)]
 pub struct ExtensionToolWrapper {
     inner: Arc<dyn AgentTool>,
     extension_name: String,
@@ -207,6 +221,7 @@ pub struct ExtensionToolWrapper {
 }
 
 impl ExtensionToolWrapper {
+    #[allow(dead_code)]
     pub fn new(inner: Arc<dyn AgentTool>, extension_name: String) -> Self {
         Self {
             inner,
@@ -215,14 +230,17 @@ impl ExtensionToolWrapper {
         }
     }
 
+    #[allow(dead_code)]
     pub fn extension_name(&self) -> &str {
         &self.extension_name
     }
 
+    #[allow(dead_code)]
     pub fn set_requires_permission(&self, requires: bool) {
         self.requires_permission.store(requires, Ordering::Relaxed);
     }
 
+    #[allow(dead_code)]
     pub fn requires_permission(&self) -> bool {
         self.requires_permission.load(Ordering::Relaxed)
     }

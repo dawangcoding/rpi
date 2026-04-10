@@ -5,4 +5,4 @@
 pub mod html;
 pub mod html_template;
 
-pub use html::{HtmlExporter, ExportTheme};
+pub use html::HtmlExporter;

@@ -65,6 +65,7 @@ impl BashTool {
     }
 
     /// 设置 shell
+    #[allow(dead_code)] // 预留方法供未来使用
     pub fn with_shell(mut self, shell: String) -> Self {
         self.shell = shell;
         self

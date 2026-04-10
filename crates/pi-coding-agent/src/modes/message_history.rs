@@ -15,6 +15,7 @@ pub enum MessageEntry {
 }
 
 /// 消息历史容器 - 管理所有消息并实现 Component trait
+#[allow(dead_code)] // 多个字段和方法供未来 UI 扩展使用
 pub struct MessageHistory {
     messages: Vec<MessageEntry>,
     scroll_offset: usize,       // 渲染起始行偏移
@@ -81,6 +82,7 @@ impl MessageHistory {
     }
 
     /// 向上滚动
+    #[allow(dead_code)]
     pub fn scroll_up(&mut self, lines: usize) {
         self.auto_scroll = false;
         self.scroll_offset = self.scroll_offset.saturating_sub(lines);
@@ -88,6 +90,7 @@ impl MessageHistory {
     }
 
     /// 向下滚动
+    #[allow(dead_code)]
     pub fn scroll_down(&mut self, lines: usize) {
         self.scroll_offset = self.scroll_offset.saturating_add(lines);
         self.needs_render = true;
@@ -96,6 +99,7 @@ impl MessageHistory {
     }
 
     /// 滚动到底部
+    #[allow(dead_code)]
     pub fn scroll_to_bottom(&mut self) {
         self.auto_scroll = true;
         self.scroll_offset = usize::MAX; // 渲染时会被裁剪
@@ -111,16 +115,19 @@ impl MessageHistory {
     }
 
     /// 获取消息数量
+    #[allow(dead_code)]
     pub fn message_count(&self) -> usize {
         self.messages.len()
     }
 
     /// 获取是否自动滚动
+    #[allow(dead_code)]
     pub fn auto_scroll(&self) -> bool {
         self.auto_scroll
     }
 
     /// 获取滚动偏移
+    #[allow(dead_code)]
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
     }

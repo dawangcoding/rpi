@@ -930,4 +930,116 @@ mod tests {
         assert_eq!(settings.len(), 4);
         assert!(settings.iter().all(|s| s.threshold == "BLOCK_NONE"));
     }
+
+    #[test]
+    fn test_safety_filter_response_handling() {
+        // 测试安全过滤响应的处理
+        let safety_response = r#"{
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": ""}]},
+                "finishReason": "SAFETY",
+                "safetyRatings": [
+                    {"category": "HARM_CATEGORY_HARASSMENT", "probability": "HIGH"}
+                ]
+            }]
+        }"#;
+
+        let parsed: serde_json::Value = serde_json::from_str(safety_response).unwrap();
+        assert_eq!(parsed["candidates"][0]["finishReason"], "SAFETY");
+        assert!(parsed["candidates"][0]["safetyRatings"].is_array());
+    }
+
+    #[test]
+    fn test_empty_candidates_handling() {
+        // 测试空 candidates 数组的处理
+        let empty_response = r#"{"candidates": []}"#;
+        let parsed: serde_json::Value = serde_json::from_str(empty_response).unwrap();
+        let candidates = parsed["candidates"].as_array().unwrap();
+        assert!(candidates.is_empty());
+
+        // 测试缺失 candidates 字段
+        let no_candidates = r#"{"promptFeedback": {"blockReason": "SAFETY"}}"#;
+        let parsed2: serde_json::Value = serde_json::from_str(no_candidates).unwrap();
+        assert!(parsed2["candidates"].is_null());
+        assert_eq!(parsed2["promptFeedback"]["blockReason"], "SAFETY");
+    }
+
+    #[test]
+    fn test_convert_messages_with_empty_content() {
+        let provider = GoogleProvider::new();
+        let model = sample_model(Api::Google, Provider::Google);
+
+        // 测试空内容消息
+        let context = sample_context(
+            "You are helpful",
+            vec![
+                Message::User(UserMessage::new("")),
+                Message::User(UserMessage::new("   ")), // 空白字符
+                sample_user_message("Valid message"),
+            ],
+        );
+
+        let contents = provider.convert_messages(&context, &model);
+        // 空内容应该被过滤掉
+        assert!(!contents.is_empty());
+        assert!(contents.iter().all(|c| !c.parts.is_empty()));
+    }
+
+    #[test]
+    fn test_build_url_with_special_model_ids() {
+        let provider = GoogleProvider::new();
+        
+        // 测试各种模型 ID 格式
+        let mut model = sample_model(Api::Google, Provider::Google);
+        
+        model.id = "gemini-1.5-pro".to_string();
+        let url1 = provider.build_url(&model, "test-key");
+        assert!(url1.contains("gemini-1.5-pro"));
+        
+        model.id = "gemini-1.5-flash".to_string();
+        let url2 = provider.build_url(&model, "test-key");
+        assert!(url2.contains("gemini-1.5-flash"));
+        
+        model.id = "gemini-pro".to_string();
+        let url3 = provider.build_url(&model, "test-key");
+        assert!(url3.contains("gemini-pro"));
+    }
+
+    #[test]
+    fn test_convert_messages_with_unicode() {
+        let provider = GoogleProvider::new();
+        let model = sample_model(Api::Google, Provider::Google);
+
+        let context = sample_context(
+            "You are helpful",
+            vec![
+                sample_user_message("Hello 世界 🌍 with émojis"),
+                Message::Assistant(sample_assistant_message("你好 👋")),
+            ],
+        );
+
+        let contents = provider.convert_messages(&context, &model);
+        assert_eq!(contents.len(), 2);
+        
+        // 验证 Unicode 字符被正确处理
+        let user_content = &contents[0];
+        assert_eq!(user_content.role, "user");
+    }
+
+    #[test]
+    fn test_request_body_with_generation_config() {
+        let provider = GoogleProvider::new();
+        let model = sample_model(Api::Google, Provider::Google);
+        
+        let mut options = sample_stream_options("test-key");
+        options.temperature = Some(0.8);
+        options.max_tokens = Some(2048);
+        
+        let context = sample_context("System prompt", vec![sample_user_message("Hello")]);
+        let body = provider.build_request_body(&context, &model, &options);
+        
+        assert!(body.generation_config.is_some());
+        assert!(body.system_instruction.is_some());
+        assert!(body.safety_settings.is_some());
+    }
 }

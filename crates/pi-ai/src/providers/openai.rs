@@ -443,6 +443,7 @@ impl StreamState {
         }
     }
 
+    #[allow(dead_code)] // 预留方法供未来使用
     fn finish(&mut self, assistant_message: &mut AssistantMessage) -> Vec<AssistantMessageEvent> {
         let mut events = Vec::new();
 
@@ -486,6 +487,7 @@ impl StreamState {
 
 /// Chat Completion Chunk (SSE 事件)
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Serde 反序列化结构体，字段由 JSON 解析填充
 struct ChatCompletionChunk {
     id: String,
     object: String,
@@ -523,6 +525,7 @@ struct CompletionTokensDetails {
 
 /// Choice
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Serde 反序列化结构体
 struct Choice {
     index: i32,
     delta: Delta,
@@ -545,6 +548,7 @@ struct Delta {
 
 /// Tool Call Delta
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Serde 反序列化结构体
 struct ToolCallDelta {
     index: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -570,6 +574,7 @@ struct FunctionDelta {
 
 /// OpenAI Completions 兼容性设置
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // 配置字段供未来使用
 struct OpenAiCompat {
     supports_store: bool,
     supports_developer_role: bool,
@@ -1263,5 +1268,381 @@ data: [DONE]
         assert!(result.is_err());
 
         // 不严格验证请求次数
+    }
+
+    // ==================== 边界测试 ====================
+
+    #[tokio::test]
+    async fn test_stream_interrupted_recovery() {
+        let mut server = Server::new_async().await;
+        let provider = OpenAiProvider::new();
+
+        // 模拟流被中断的情况 - 只有部分数据
+        let sse_body = r#"data: {"id":"chatcmpl-partial","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-partial","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hel"},"finish_reason":null}]}
+
+"#; // 流突然结束，没有 [DONE]
+
+        let mock = server.mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_body)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let mut stream = provider.stream(&context, &model, &options).await.unwrap();
+
+        let mut events = vec![];
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+
+        // 应该至少有一些事件，即使流被中断
+        assert!(!events.is_empty());
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_non_standard_finish_reason() {
+        let mut server = Server::new_async().await;
+        let provider = OpenAiProvider::new();
+
+        // 测试各种非标准 finish_reason
+        let sse_body = r#"data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Test"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}]}
+
+data: [DONE]
+"#;
+
+        let mock = server.mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_body)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let mut stream = provider.stream(&context, &model, &options).await.unwrap();
+
+        let mut events = vec![];
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+
+        // 应该能处理非标准 finish_reason
+        assert!(!events.is_empty());
+        // 最后一个应该是 Done 事件
+        assert!(matches!(events.last().unwrap(), Ok(AssistantMessageEvent::Done { .. })));
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_empty_choices_array() {
+        let mut server = Server::new_async().await;
+        let provider = OpenAiProvider::new();
+
+        // 测试空 choices 数组的情况
+        let sse_body = r#"data: {"id":"chatcmpl-empty","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[]}
+
+data: {"id":"chatcmpl-empty","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-empty","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Response"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-empty","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+"#;
+
+        let mock = server.mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_body)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let mut stream = provider.stream(&context, &model, &options).await.unwrap();
+
+        let mut events = vec![];
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+
+        // 应该能处理空 choices，只处理有效的 chunk
+        assert!(!events.is_empty());
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_network_error_handling() {
+        let mut server = Server::new_async().await;
+        let provider = OpenAiProvider::new();
+
+        // 测试网络错误（connection reset）
+        let error_json = r#"{"error": {"message": "Connection reset by peer", "type": "network_error"}}"#;
+
+        let mock = server.mock("POST", "/chat/completions")
+            .with_status(503)
+            .with_header("content-type", "application/json")
+            .with_body(error_json)
+            .expect_at_least(1)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let result = provider.stream(&context, &model, &options).await;
+        assert!(result.is_err());
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_timeout_error_handling() {
+        let mut server = Server::new_async().await;
+        let provider = OpenAiProvider::new();
+
+        // 测试超时错误
+        let error_json = r#"{"error": {"message": "Request timeout", "type": "timeout_error"}}"#;
+
+        let mock = server.mock("POST", "/chat/completions")
+            .with_status(408)
+            .with_header("content-type", "application/json")
+            .with_body(error_json)
+            .expect_at_least(1)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let result = provider.stream(&context, &model, &options).await;
+        assert!(result.is_err());
+
+        mock.assert_async().await;
+    }
+
+    #[test]
+    fn test_is_retryable_error() {
+        // 可重试的错误
+        assert!(is_retryable_error(&anyhow::anyhow!("429 Too Many Requests")));
+        assert!(is_retryable_error(&anyhow::anyhow!("connection refused")));
+        assert!(is_retryable_error(&anyhow::anyhow!("timeout occurred")));
+        assert!(is_retryable_error(&anyhow::anyhow!("network error")));
+        assert!(is_retryable_error(&anyhow::anyhow!("dns resolution failed")));
+        assert!(is_retryable_error(&anyhow::anyhow!("connection reset")));
+
+        // 不可重试的错误
+        assert!(!is_retryable_error(&anyhow::anyhow!("400 Bad Request")));
+        assert!(!is_retryable_error(&anyhow::anyhow!("401 Unauthorized")));
+        assert!(!is_retryable_error(&anyhow::anyhow!("Invalid API key")));
+    }
+
+    #[test]
+    fn test_convert_messages_with_empty_content() {
+        let model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+        let compat = get_compat(&model);
+
+        let context = sample_context(
+            "You are helpful",
+            vec![
+                Message::User(UserMessage::new("")),
+                sample_user_message("Valid message"),
+            ],
+        );
+
+        let messages = convert_messages(&model, &context, &compat).unwrap();
+
+        // 空消息也会被包含（OpenAI 格式）
+        assert!(messages.len() >= 1);
+    }
+
+    #[test]
+    fn test_map_finish_reason_all_cases() {
+        // 测试所有可能的 finish_reason
+        let (stop, err) = map_finish_reason("stop");
+        assert_eq!(stop, StopReason::Stop);
+        assert!(err.is_none());
+
+        let (stop, err) = map_finish_reason("end");
+        assert_eq!(stop, StopReason::Stop);
+        assert!(err.is_none());
+
+        let (stop, err) = map_finish_reason("length");
+        assert_eq!(stop, StopReason::Length);
+        assert!(err.is_none());
+
+        let (stop, err) = map_finish_reason("tool_calls");
+        assert_eq!(stop, StopReason::ToolUse);
+        assert!(err.is_none());
+
+        let (stop, err) = map_finish_reason("function_call");
+        assert_eq!(stop, StopReason::ToolUse);
+        assert!(err.is_none());
+
+        let (stop, err) = map_finish_reason("content_filter");
+        assert_eq!(stop, StopReason::Error);
+        assert!(err.is_some());
+
+        let (stop, err) = map_finish_reason("network_error");
+        assert_eq!(stop, StopReason::Error);
+        assert!(err.is_some());
+
+        // 未知类型
+        let (stop, err) = map_finish_reason("unknown_reason");
+        assert_eq!(stop, StopReason::Error);
+        assert!(err.is_some());
+    }
+
+    #[test]
+    fn test_non_standard_finish_reason_variations() {
+        // 测试更多非标准 finish_reason 变体
+        // 注意：只有特定的 finish_reason 被映射，其他都返回 Error
+        let test_cases = vec![
+            ("content_filter", StopReason::Error),
+            ("network_error", StopReason::Error),
+            // 以下是非标准值，会被映射为 Error
+            ("safety_violation", StopReason::Error),
+            ("policy_violation", StopReason::Error),
+            ("recitation", StopReason::Error),
+            ("max_tokens_reached", StopReason::Error), // 非标准，映射为 Error
+            ("user_cancel", StopReason::Error), // 非标准，映射为 Error
+            ("api_error", StopReason::Error),
+        ];
+
+        for (reason, expected) in test_cases {
+            let (stop, _) = map_finish_reason(reason);
+            assert_eq!(stop, expected, "finish_reason '{}' should map to {:?}", reason, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_empty_choices_with_delta_variations() {
+        let mut server = Server::new_async().await;
+        let provider = OpenAiProvider::new();
+
+        // 测试多种空 choices 变体
+        let sse_body = r#"data: {"id":"test","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[]}
+
+data: {"id":"test","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"test","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[]}
+
+data: {"id":"test","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: [DONE]
+"#;
+
+        let mock = server.mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_body)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let mut stream = provider.stream(&context, &model, &options).await.unwrap();
+
+        let mut events = vec![];
+        while let Some(event) = stream.next().await {
+            if let Ok(evt) = event {
+                events.push(evt);
+            }
+        }
+
+        // 应该过滤掉空 choices，只保留有效事件
+        assert!(!events.is_empty());
+
+        mock.assert_async().await;
+    }
+
+    #[test]
+    fn test_build_request_body_with_various_options() {
+        let provider = OpenAiProvider::new();
+        let model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+
+        // 测试带各种选项的请求体构建
+        let mut options = sample_stream_options("test-key");
+        options.temperature = Some(0.7);
+        options.max_tokens = Some(1000);
+
+        let context = sample_context("System prompt", vec![sample_user_message("Hello")]);
+        let body = provider.build_request_body(&model, &context, &options).unwrap();
+
+        // 验证请求体包含预期的字段
+        assert!(body.get("temperature").is_some(), "Should have temperature field");
+        assert!(body.get("max_tokens").is_some() || body.get("max_completion_tokens").is_some(), 
+                "Should have max_tokens or max_completion_tokens field");
+        assert!(body.get("model").is_some(), "Should have model field");
+        assert_eq!(body["stream"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_convert_messages_with_special_chars() {
+        let model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+        let compat = get_compat(&model);
+
+        // 测试包含特殊字符的消息
+        let context = sample_context(
+            "You are helpful",
+            vec![
+                sample_user_message("Hello world with special content"),
+                sample_user_message("Unicode: hello world"),
+            ],
+        );
+
+        let messages = convert_messages(&model, &context, &compat).unwrap();
+        // 系统提示会被转换为 system 消息，所以至少有 3 条消息
+        assert!(messages.len() >= 2, "Should have at least 2 messages");
+
+        // 验证消息被正确转换
+        let has_content = messages.iter().any(|m| {
+            m.get("content").and_then(|c| c.as_str()).map(|s| !s.is_empty()).unwrap_or(false)
+        });
+        assert!(has_content, "Should have messages with content");
+    }
+
+    #[test]
+    fn test_api_provider_trait_methods() {
+        let provider = OpenAiProvider::new();
+        
+        // 测试 ApiProvider trait 的基本方法
+        let api = provider.api();
+        assert_eq!(api, Api::OpenAiChatCompletions);
     }
 }

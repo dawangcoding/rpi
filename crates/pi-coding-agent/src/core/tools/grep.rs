@@ -81,13 +81,13 @@ impl GrepTool {
                     i + 1
                 };
 
-                for j in start..end {
+                for (j, line) in lines.iter().enumerate().take(end).skip(start) {
                     let is_match_line = j == i;
                     let prefix = if is_match_line { "> " } else { "  " };
                     matches.push(Match {
                         file_path: path.to_string_lossy().to_string(),
                         line_number: j + 1, // 1-indexed
-                        content: format!("{}{}", prefix, lines[j]),
+                        content: format!("{}{}", prefix, line),
                     });
                 }
             }

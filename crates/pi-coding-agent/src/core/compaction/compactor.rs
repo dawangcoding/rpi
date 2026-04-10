@@ -26,6 +26,7 @@ pub struct CompactionResult {
 
 impl CompactionResult {
     /// 计算节省的 token 百分比
+    #[allow(dead_code)]
     pub fn savings_percentage(&self) -> f64 {
         if self.original_tokens == 0 {
             return 0.0;
@@ -39,6 +40,7 @@ pub struct SessionCompactor {
     token_counter: Arc<dyn TokenCounter>,
     context_window_size: usize,
     compact_threshold: f64,
+    #[allow(dead_code)]
     preserve_recent_turns: usize,
 }
 
@@ -57,6 +59,7 @@ impl SessionCompactor {
     }
 
     /// 使用自定义配置创建
+    #[allow(dead_code)]
     pub fn with_config(
         token_counter: Arc<dyn TokenCounter>,
         context_window_size: usize,
@@ -92,6 +95,7 @@ impl SessionCompactor {
     }
 
     /// 获取当前 token 使用情况
+    #[allow(dead_code)]
     pub fn estimate_usage(&self, messages: &[AgentMessage]) -> (usize, f64) {
         let llm_messages: Vec<Message> = messages
             .iter()
@@ -354,16 +358,19 @@ impl SessionCompactor {
     }
 
     /// 获取上下文窗口大小
+    #[allow(dead_code)]
     pub fn context_window_size(&self) -> usize {
         self.context_window_size
     }
 
     /// 获取压缩阈值
+    #[allow(dead_code)]
     pub fn compact_threshold(&self) -> f64 {
         self.compact_threshold
     }
 
     /// 获取保留的对话轮数
+    #[allow(dead_code)]
     pub fn preserve_recent_turns(&self) -> usize {
         self.preserve_recent_turns
     }

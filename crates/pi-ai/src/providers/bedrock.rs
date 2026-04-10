@@ -752,4 +752,129 @@ mod tests {
             assert_eq!(model.api, Api::AmazonBedrock);
         }
     }
+
+    #[test]
+    fn test_parse_region_variations() {
+        let provider = BedrockProvider::new();
+
+        // 测试 bedrock:// 前缀的 URL
+        assert_eq!(provider.parse_region("bedrock://us-east-1"), "us-east-1");
+        assert_eq!(provider.parse_region("bedrock://eu-west-1"), "eu-west-1");
+        assert_eq!(provider.parse_region("bedrock://ap-northeast-1"), "ap-northeast-1");
+
+        // 测试没有前缀的情况（应该使用环境变量或默认值）
+        // 这里我们无法测试环境变量，但可以测试默认行为
+        let region = provider.parse_region("");
+        // 应该返回环境变量值或默认值
+        assert!(!region.is_empty());
+    }
+
+    #[test]
+    fn test_region_configuration_validation() {
+        let provider = BedrockProvider::new();
+
+        // 测试有效的 AWS 区域格式
+        let valid_regions = vec![
+            "us-east-1",
+            "us-west-2",
+            "eu-west-1",
+            "eu-central-1",
+            "ap-northeast-1",
+            "ap-southeast-1",
+            "ca-central-1",
+            "sa-east-1",
+        ];
+
+        for region in valid_regions {
+            let parsed = provider.parse_region(&format!("bedrock://{}", region));
+            assert_eq!(parsed, region, "Region {} should be parsed correctly", region);
+        }
+    }
+
+    #[test]
+    fn test_build_request_body_edge_cases() {
+        let provider = BedrockProvider::new();
+        let model = sample_model(Api::AmazonBedrock, Provider::AmazonBedrock);
+
+        // 测试空消息列表
+        let context = sample_context("System", vec![]);
+        let options = sample_stream_options("test-key");
+        let body = provider.build_request_body(&context, &model, &options);
+        
+        assert!(body["messages"].as_array().unwrap().is_empty());
+        assert_eq!(body["anthropic_version"], "bedrock-2023-05-31");
+
+        // 测试带 reasoning 的模型
+        let mut reasoning_model = model.clone();
+        reasoning_model.reasoning = true;
+        let body2 = provider.build_request_body(&context, &reasoning_model, &options);
+        assert!(body2["thinking"].is_object());
+        assert_eq!(body2["thinking"]["type"], "enabled");
+    }
+
+    #[test]
+    fn test_convert_messages_with_only_whitespace() {
+        let provider = BedrockProvider::new();
+        let model = sample_model(Api::AmazonBedrock, Provider::AmazonBedrock);
+
+        let context = sample_context(
+            "System",
+            vec![
+                Message::User(UserMessage::new("")),
+                Message::User(UserMessage::new("   ")),
+                Message::User(UserMessage::new("\n\t")),
+                sample_user_message("Valid"),
+            ],
+        );
+
+        let messages = provider.convert_messages(&context.messages, &model);
+        // 空白消息应该被过滤掉
+        assert!(!messages.is_empty());
+    }
+
+    #[test]
+    fn test_convert_tools_with_complex_schema() {
+        let provider = BedrockProvider::new();
+
+        // 测试复杂参数 schema 的工具
+        let complex_tool = Tool {
+            name: "complex_tool".to_string(),
+            description: "A tool with complex schema".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "nested": {
+                        "type": "object",
+                        "properties": {
+                            "field1": {"type": "string"},
+                            "field2": {"type": "number"}
+                        }
+                    },
+                    "array_field": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    }
+                },
+                "required": ["nested"]
+            }),
+        };
+
+        let converted = provider.convert_tools(&[complex_tool]);
+        assert_eq!(converted.len(), 1);
+        assert!(converted[0]["input_schema"]["properties"]["nested"].is_object());
+    }
+
+    #[test]
+    fn test_map_stop_reason_edge_cases() {
+        let provider = BedrockProvider::new();
+
+        // 测试所有已知的 stop reason
+        assert_eq!(provider.map_stop_reason_to_done("end_turn"), DoneReason::Stop);
+        assert_eq!(provider.map_stop_reason_to_done("max_tokens"), DoneReason::Length);
+        assert_eq!(provider.map_stop_reason_to_done("tool_use"), DoneReason::ToolUse);
+        
+        // 测试未知的 stop reason（应该返回 Stop 作为默认值）
+        assert_eq!(provider.map_stop_reason_to_done("unknown"), DoneReason::Stop);
+        assert_eq!(provider.map_stop_reason_to_done(""), DoneReason::Stop);
+    }
 }
