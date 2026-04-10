@@ -63,6 +63,9 @@ pub fn init_providers() {
     register_api_provider(Arc::new(providers::GoogleProvider::new()));
     register_api_provider(Arc::new(providers::MistralProvider::new()));
     register_api_provider(Arc::new(providers::BedrockProvider::new()));
+    register_api_provider(Arc::new(providers::AzureOpenAiProvider::new()));
+    register_api_provider(Arc::new(providers::XaiProvider::new()));
+    register_api_provider(Arc::new(providers::OpenRouterProvider::new()));
 
-    tracing::debug!("Registered 5 built-in providers: Anthropic, OpenAI(ChatCompletions), Google, Mistral, Bedrock");
+    tracing::debug!("Registered 8 built-in providers: Anthropic, OpenAI(ChatCompletions), Google, Mistral, Bedrock, AzureOpenAI, XAI, OpenRouter");
 }
