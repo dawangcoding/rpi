@@ -120,13 +120,7 @@ pub struct CliArgs {
     #[arg(long)]
     pub offline: bool,
 
-    /// Show help
-    #[arg(long, short)]
-    pub help: bool,
-
-    /// Show version
-    #[arg(long, short = 'v')]
-    pub version: bool,
+    // 注意：clap 自动生成 --help 和 --version，不需要显式定义
 }
 
 /// 解析 thinking level

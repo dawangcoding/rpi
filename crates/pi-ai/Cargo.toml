@@ -19,3 +19,10 @@ base64.workspace = true
 chrono.workspace = true
 bytes.workspace = true
 async-stream = "0.3"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-bedrockruntime = "1"
+
+[dev-dependencies]
+mockito.workspace = true
+tokio-test.workspace = true
+tempfile.workspace = true

@@ -729,14 +729,13 @@ fn convert_messages(
 
     for msg in &context.messages {
         // 某些 provider 不允许 tool result 后直接跟 user 消息
-        if compat.requires_assistant_after_tool_result {
-            if last_role.as_deref() == Some("tool") && matches!(msg, Message::User(_)) {
+        if compat.requires_assistant_after_tool_result
+            && last_role.as_deref() == Some("tool") && matches!(msg, Message::User(_)) {
                 messages.push(serde_json::json!({
                     "role": "assistant",
                     "content": "I have processed the tool results.",
                 }));
             }
-        }
 
         match msg {
             Message::User(user_msg) => {
@@ -1021,6 +1020,9 @@ pub fn register() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_fixtures::fixtures::*;
+    use mockito::Server;
+    use futures::StreamExt;
 
     #[test]
     fn test_map_finish_reason() {
@@ -1045,5 +1047,221 @@ mod tests {
             )),
         ];
         assert!(has_tool_history(&messages_with_tool));
+    }
+
+    #[tokio::test]
+    async fn test_stream_text_response() {
+        let mut server = Server::new_async().await;
+        let provider = OpenAiProvider::new();
+
+        // OpenAI SSE 格式 - 第一个 delta 只包含 role，第二个 delta 包含 content 触发 TextStart，后续 delta 触发 TextDelta
+        let sse_body = r#"data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+"#;
+
+        let mock = server.mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_body)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Say hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let mut stream = provider.stream(&context, &model, &options).await.unwrap();
+
+        let mut events = vec![];
+        while let Some(event) = stream.next().await {
+            events.push(event.unwrap());
+        }
+
+        // 验证事件序列
+        assert!(!events.is_empty());
+
+        // 查找 TextStart 和 TextDelta 事件
+        let text_starts: Vec<_> = events.iter().filter_map(|e| match e {
+            AssistantMessageEvent::TextStart { partial, .. } => {
+                // 从 partial 中提取文本内容
+                partial.content.iter().find_map(|c| match c {
+                    crate::types::ContentBlock::Text(t) => Some(t.text.clone()),
+                    _ => None,
+                })
+            }
+            _ => None,
+        }).collect();
+        
+        let text_deltas: Vec<_> = events.iter().filter_map(|e| match e {
+            AssistantMessageEvent::TextDelta { delta, .. } => Some(delta.clone()),
+            _ => None,
+        }).collect();
+        
+        // 验证文本内容 - "Hello" 在 TextStart 中，" world" 在 TextDelta 中
+        assert!(!text_starts.is_empty(), "No TextStart events found");
+        assert!(text_starts.iter().any(|d| d.contains("Hello")), "No 'Hello' found in text_starts: {:?}", text_starts);
+        assert!(!text_deltas.is_empty(), "No TextDelta events found");
+        assert!(text_deltas.iter().any(|d| d.contains("world")), "No 'world' found in deltas: {:?}", text_deltas);
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_stream_tool_call() {
+        let mut server = Server::new_async().await;
+        let provider = OpenAiProvider::new();
+
+        // 工具调用测试 - 注意 tool_calls 需要与 role 同时出现，[DONE] 后需要空行
+        let sse_body = r#"data: {"id":"chatcmpl-456","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"Paris\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-456","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+"#;
+
+        let mock = server.mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_body)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+        model.base_url = server.url();
+
+        let tool = sample_tool("get_weather", "Get weather for a location");
+        let context = sample_context_with_tools(
+            "You are a helpful assistant",
+            vec![sample_user_message("What's the weather in Paris?")],
+            vec![tool],
+        );
+        let options = sample_stream_options("test-api-key");
+
+        let mut stream = provider.stream(&context, &model, &options).await.unwrap();
+
+        let mut events = vec![];
+        while let Some(event) = stream.next().await {
+            events.push(event.unwrap());
+        }
+
+        // 验证 ToolCall 事件
+        let tool_call_starts: Vec<_> = events.iter().filter(|e| matches!(e, AssistantMessageEvent::ToolCallStart { .. })).collect();
+        assert!(!tool_call_starts.is_empty(), "Expected at least one ToolCallStart event");
+
+        // 验证 Done 事件存在
+        assert!(matches!(events.last().unwrap(), AssistantMessageEvent::Done { .. }), "Expected Done event at the end");
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_reasoning() {
+        let mut server = Server::new_async().await;
+        let provider = OpenAiProvider::new();
+
+        // OpenAI o1/o3 模型测试 - 第一个 delta 只包含 role，第二个包含 content
+        let sse_body = r#"data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1677652288,"model":"o3-mini","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1677652288,"model":"o3-mini","choices":[{"index":0,"delta":{"content":"The solution is: 42"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1677652288,"model":"o3-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+"#;
+
+        let mock = server.mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_body)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+        model.base_url = server.url();
+        model.reasoning = true;
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Solve this complex problem")]);
+        let options = sample_stream_options("test-api-key");
+
+        let mut stream = provider.stream(&context, &model, &options).await.unwrap();
+
+        let mut events = vec![];
+        while let Some(event) = stream.next().await {
+            events.push(event.unwrap());
+        }
+
+        // 验证至少有一些事件
+        assert!(!events.is_empty());
+
+        // 验证 Done 事件
+        assert!(matches!(events.last().unwrap(), AssistantMessageEvent::Done { .. }));
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_error_handling() {
+        let mut server = Server::new_async().await;
+        let provider = OpenAiProvider::new();
+
+        // 测试 429 错误
+        let error_json = r#"{"error": {"message": "Rate limit exceeded", "type": "rate_limit_error", "code": "rate_limit"}}"#;
+
+        // 因为有重试机制，需要设置多次期望
+        let mock = server.mock("POST", "/chat/completions")
+            .with_status(429)
+            .with_header("content-type", "application/json")
+            .with_body(error_json)
+            .expect_at_least(1)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let result = provider.stream(&context, &model, &options).await;
+        assert!(result.is_err());
+
+        // 不严格验证请求次数，因为重试逻辑可能变化
+    }
+
+    #[tokio::test]
+    async fn test_error_handling_500() {
+        let mut server = Server::new_async().await;
+        let provider = OpenAiProvider::new();
+
+        // 测试 500 错误
+        let error_json = r#"{"error": {"message": "Internal server error", "type": "internal_error"}}"#;
+
+        let mock = server.mock("POST", "/chat/completions")
+            .with_status(500)
+            .with_header("content-type", "application/json")
+            .with_body(error_json)
+            .expect_at_least(1)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::OpenAiChatCompletions, Provider::Openai);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let result = provider.stream(&context, &model, &options).await;
+        assert!(result.is_err());
+
+        // 不严格验证请求次数
     }
 }

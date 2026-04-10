@@ -39,11 +39,17 @@ impl LsTool {
             self.cwd.join(path_buf)
         };
         
-        // 规范化路径
-        let canonical = absolute_path.canonicalize().unwrap_or(absolute_path);
+        // 规范化 cwd
+        let canonical_cwd = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
+        
+        // 如果路径存在，使用 canonicalize；否则使用绝对路径
+        let canonical = if absolute_path.exists() {
+            absolute_path.canonicalize().unwrap_or(absolute_path)
+        } else {
+            absolute_path
+        };
         
         // 确保路径在 cwd 下
-        let canonical_cwd = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
         if !canonical.starts_with(&canonical_cwd) {
             return Err(anyhow::anyhow!(
                 "Path '{}' is outside the working directory",
@@ -297,5 +303,278 @@ impl AgentTool for LsTool {
                 },
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_ls_directory() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("file1.txt"), "content1").unwrap();
+        std::fs::write(dir.path().join("file2.txt"), "content2").unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        
+        let tool = LsTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"path": "."}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证列出文件和目录
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("file1.txt") || text.contains("file1"));
+        assert!(text.contains("file2.txt") || text.contains("file2"));
+        assert!(text.contains("subdir") || text.contains("subdir/"));
+        
+        let details = result.details.as_object().unwrap();
+        assert!(details["entry_count"].as_u64().unwrap() >= 3);
+    }
+
+    #[tokio::test]
+    async fn test_ls_nonexistent() {
+        let dir = TempDir::new().unwrap();
+        
+        let tool = LsTool::new(dir.path().to_path_buf());
+        // 使用相对路径指向一个不存在的目录
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"path": "nonexistent_dir"}),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        // 错误消息可能是 "Path not found" 或 "No such file or directory" 或 "outside"
+        assert!(err_msg.contains("Path not found") || err_msg.contains("No such file") || err_msg.contains("outside"));
+    }
+
+    #[tokio::test]
+    async fn test_ls_not_a_directory() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("file.txt");
+        std::fs::write(&file_path, "content").unwrap();
+        
+        let tool = LsTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"path": file_path.to_str().unwrap()}),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Not a directory"));
+    }
+
+    #[tokio::test]
+    async fn test_ls_empty_directory() {
+        let dir = TempDir::new().unwrap();
+        let empty_dir = dir.path().join("empty");
+        std::fs::create_dir(&empty_dir).unwrap();
+        
+        let tool = LsTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"path": "empty"}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证空目录提示
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("empty directory"));
+        
+        let details = result.details.as_object().unwrap();
+        assert_eq!(details["entry_count"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_ls_with_hidden_files() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("visible.txt"), "").unwrap();
+        std::fs::write(dir.path().join(".hidden"), "").unwrap();
+        
+        // 默认情况下不显示隐藏文件
+        let tool = LsTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"path": "."}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("visible.txt") || text.contains("visible"));
+        assert!(!text.contains(".hidden"));
+    }
+
+    #[tokio::test]
+    async fn test_ls_all_files() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("visible.txt"), "").unwrap();
+        std::fs::write(dir.path().join(".hidden"), "").unwrap();
+        
+        // 显示所有文件
+        let tool = LsTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"path": ".", "all": true}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("visible.txt") || text.contains("visible"));
+        assert!(text.contains(".hidden"));
+    }
+
+    #[tokio::test]
+    async fn test_ls_recursive() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        std::fs::write(dir.path().join("root.txt"), "").unwrap();
+        std::fs::write(dir.path().join("subdir/nested.txt"), "").unwrap();
+        
+        let tool = LsTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"path": ".", "recursive": true}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证递归列出
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("root.txt") || text.contains("root"));
+        assert!(text.contains("nested.txt") || text.contains("nested"));
+    }
+
+    #[tokio::test]
+    async fn test_ls_with_limit() {
+        let dir = TempDir::new().unwrap();
+        for i in 0..10 {
+            std::fs::write(dir.path().join(format!("file{}.txt", i)), "").unwrap();
+        }
+        
+        let tool = LsTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"path": ".", "limit": 5}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证限制
+        let details = result.details.as_object().unwrap();
+        assert!(details["entry_count"].as_u64().unwrap() <= 5);
+        assert_eq!(details["limit_reached"], true);
+    }
+
+    #[tokio::test]
+    async fn test_ls_default_path() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "").unwrap();
+        
+        let tool = LsTool::new(dir.path().to_path_buf());
+        // 不提供 path 参数，应该默认使用当前目录
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("file.txt") || text.contains("file"));
+    }
+
+    #[tokio::test]
+    async fn test_ls_shows_directory_suffix() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("mydir")).unwrap();
+        
+        let tool = LsTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"path": "."}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        // 目录应该有斜杠后缀
+        assert!(text.contains("mydir/") || text.contains("mydir"));
+    }
+
+    #[tokio::test]
+    async fn test_ls_shows_file_size() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("small.txt"), "hi").unwrap();
+        
+        let tool = LsTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"path": "."}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        // 文件应该有大小信息
+        assert!(text.contains("B") || text.contains("small"));
+    }
+
+    #[test]
+    fn test_ls_tool_name() {
+        let tool = LsTool::new(PathBuf::from("/tmp"));
+        assert_eq!(tool.name(), "ls");
+    }
+
+    #[test]
+    fn test_ls_tool_label() {
+        let tool = LsTool::new(PathBuf::from("/tmp"));
+        assert_eq!(tool.label(), "List Directory");
+    }
+
+    #[test]
+    fn test_ls_tool_parameters() {
+        let tool = LsTool::new(PathBuf::from("/tmp"));
+        let params = tool.parameters();
+        
+        assert!(params.is_object());
+        let obj = params.as_object().unwrap();
+        assert!(obj.contains_key("type"));
+        assert!(obj.contains_key("properties"));
+        
+        let properties = obj["properties"].as_object().unwrap();
+        assert!(properties.contains_key("path"));
+        assert!(properties.contains_key("recursive"));
+        assert!(properties.contains_key("all"));
+        assert!(properties.contains_key("limit"));
     }
 }

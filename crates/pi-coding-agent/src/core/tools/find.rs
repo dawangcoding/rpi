@@ -31,11 +31,17 @@ impl FindTool {
             self.cwd.join(path_buf)
         };
         
-        // 规范化路径
-        let canonical = absolute_path.canonicalize().unwrap_or(absolute_path);
+        // 规范化 cwd
+        let canonical_cwd = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
+        
+        // 如果路径存在，使用 canonicalize；否则使用绝对路径
+        let canonical = if absolute_path.exists() {
+            absolute_path.canonicalize().unwrap_or(absolute_path)
+        } else {
+            absolute_path
+        };
         
         // 确保路径在 cwd 下
-        let canonical_cwd = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
         if !canonical.starts_with(&canonical_cwd) {
             return Err(anyhow::anyhow!(
                 "Path '{}' is outside the working directory",
@@ -249,5 +255,258 @@ impl AgentTool for FindTool {
                 },
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_find_files() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("file1.txt"), "content1").unwrap();
+        std::fs::write(dir.path().join("file2.txt"), "content2").unwrap();
+        std::fs::write(dir.path().join("script.rs"), "code").unwrap();
+        
+        let tool = FindTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "*.txt", "path": "."}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证找到 txt 文件
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("file1.txt") || text.contains("file1"));
+        assert!(text.contains("file2.txt") || text.contains("file2"));
+        assert!(!text.contains("script.rs"));
+        
+        let details = result.details.as_object().unwrap();
+        assert!(details["result_count"].as_u64().unwrap() >= 2);
+    }
+
+    #[tokio::test]
+    async fn test_find_with_glob_star() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("test.rs"), "").unwrap();
+        std::fs::write(dir.path().join("main.rs"), "").unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "").unwrap();
+        
+        let tool = FindTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "*.rs", "path": "."}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证找到所有 rs 文件
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("test.rs") || text.contains("test"));
+        assert!(text.contains("main.rs") || text.contains("main"));
+        assert!(text.contains("lib.rs") || text.contains("lib"));
+    }
+
+    #[tokio::test]
+    async fn test_find_recursive() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        std::fs::write(dir.path().join("root.txt"), "").unwrap();
+        std::fs::write(dir.path().join("subdir/nested.txt"), "").unwrap();
+        
+        let tool = FindTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "**/*.txt", "path": "."}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证递归查找
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("root.txt") || text.contains("root"));
+        assert!(text.contains("nested.txt") || text.contains("nested"));
+    }
+
+    #[tokio::test]
+    async fn test_find_directories() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::create_dir(dir.path().join("tests")).unwrap();
+        std::fs::write(dir.path().join("file.txt"), "").unwrap();
+        
+        let tool = FindTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "*", "path": ".", "type": "dir"}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证只找到目录
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("src") || text.contains("src/"));
+        assert!(text.contains("tests") || text.contains("tests/"));
+        assert!(!text.contains("file.txt"));
+    }
+
+    #[tokio::test]
+    async fn test_find_files_only() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("file.txt"), "").unwrap();
+        
+        let tool = FindTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "*", "path": ".", "type": "file"}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证只找到文件
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("file.txt") || text.contains("file"));
+    }
+
+    #[tokio::test]
+    async fn test_find_no_match() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "").unwrap();
+        
+        let tool = FindTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "*.rs", "path": "."}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证无匹配
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("No files found"));
+        
+        let details = result.details.as_object().unwrap();
+        assert_eq!(details["result_count"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_find_with_limit() {
+        let dir = TempDir::new().unwrap();
+        for i in 0..10 {
+            std::fs::write(dir.path().join(format!("file{}.txt", i)), "").unwrap();
+        }
+        
+        let tool = FindTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "*.txt", "path": ".", "limit": 5}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证限制
+        let details = result.details.as_object().unwrap();
+        assert!(details["result_count"].as_u64().unwrap() <= 5);
+        assert_eq!(details["limit_reached"], true);
+    }
+
+    #[tokio::test]
+    async fn test_find_missing_pattern() {
+        let dir = TempDir::new().unwrap();
+        
+        let tool = FindTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"path": "."}),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing 'pattern' parameter"));
+    }
+
+    #[tokio::test]
+    async fn test_find_invalid_glob() {
+        let dir = TempDir::new().unwrap();
+        
+        let tool = FindTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "[invalid", "path": "."}),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid glob pattern"));
+    }
+
+    #[tokio::test]
+    async fn test_find_nonexistent_path() {
+        let dir = TempDir::new().unwrap();
+        
+        let tool = FindTool::new(dir.path().to_path_buf());
+        // 使用相对路径指向一个不存在的目录
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "*", "path": "nonexistent_dir"}),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        // 错误消息可能是 "Path not found" 或 "No such file or directory" 或 "outside"
+        assert!(err_msg.contains("Path not found") || err_msg.contains("No such file") || err_msg.contains("outside"));
+    }
+
+    #[test]
+    fn test_find_tool_name() {
+        let tool = FindTool::new(PathBuf::from("/tmp"));
+        assert_eq!(tool.name(), "find");
+    }
+
+    #[test]
+    fn test_find_tool_label() {
+        let tool = FindTool::new(PathBuf::from("/tmp"));
+        assert_eq!(tool.label(), "Find Files");
+    }
+
+    #[test]
+    fn test_find_tool_parameters() {
+        let tool = FindTool::new(PathBuf::from("/tmp"));
+        let params = tool.parameters();
+        
+        assert!(params.is_object());
+        let obj = params.as_object().unwrap();
+        assert!(obj.contains_key("type"));
+        assert!(obj.contains_key("properties"));
+        assert!(obj.contains_key("required"));
+        
+        let properties = obj["properties"].as_object().unwrap();
+        assert!(properties.contains_key("pattern"));
+        assert!(properties.contains_key("path"));
+        assert!(properties.contains_key("type"));
+        assert!(properties.contains_key("limit"));
     }
 }

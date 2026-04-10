@@ -3,4 +3,5 @@
 //! 包含交互式模式、打印模式、JSON 模式等
 
 pub mod interactive;
+pub mod interactive_components;
 pub mod print_mode;

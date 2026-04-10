@@ -175,6 +175,7 @@ impl Component for TruncatedText {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::visible_width;
 
     #[test]
     fn test_text_new() {

@@ -161,3 +161,79 @@ pub fn truncate_line(line: &str, max_chars: usize) -> (String, bool) {
         (format!("{}... [truncated]", &line[..max_chars]), true)
     }
 }
+
+/// 流式截断结果
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StreamingTruncationResult {
+    pub content: String,
+    pub was_truncated: bool,
+    pub original_lines: usize,
+    pub kept_lines: usize,
+    pub kept_bytes: usize,
+}
+
+/// 从文件流中按行截断，无需全量加载到内存
+/// 适用于超大文件的处理
+pub async fn truncate_file_streaming(
+    path: &std::path::Path,
+    max_lines: usize,
+    max_bytes: usize,
+    keep_head: bool,  // true = 保留头部, false = 保留尾部
+) -> anyhow::Result<StreamingTruncationResult> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    
+    let file = tokio::fs::File::open(path).await?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    
+    let mut collected_lines = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut total_lines = 0usize;
+    
+    if keep_head {
+        // 保留头部：读取直到达到限制
+        while let Some(line) = lines.next_line().await? {
+            total_lines += 1;
+            let line_bytes = line.len() + 1; // +1 for newline
+            
+            if collected_lines.len() < max_lines && total_bytes + line_bytes <= max_bytes {
+                total_bytes += line_bytes;
+                collected_lines.push(line);
+            }
+        }
+    } else {
+        // 保留尾部：使用环形缓冲区
+        use std::collections::VecDeque;
+        let mut ring: VecDeque<String> = VecDeque::with_capacity(max_lines + 1);
+        let mut ring_bytes = 0usize;
+        
+        while let Some(line) = lines.next_line().await? {
+            total_lines += 1;
+            let line_bytes = line.len() + 1;
+            
+            ring.push_back(line);
+            ring_bytes += line_bytes;
+            
+            // 移除超出限制的行
+            while ring.len() > max_lines || ring_bytes > max_bytes {
+                if let Some(removed) = ring.pop_front() {
+                    ring_bytes -= removed.len() + 1;
+                }
+            }
+        }
+        
+        collected_lines = ring.into_iter().collect();
+        total_bytes = collected_lines.iter().map(|l| l.len() + 1).sum();
+    }
+    
+    let was_truncated = total_lines > collected_lines.len();
+    let output = collected_lines.join("\n");
+    
+    Ok(StreamingTruncationResult {
+        content: output,
+        was_truncated,
+        original_lines: total_lines,
+        kept_lines: collected_lines.len(),
+        kept_bytes: total_bytes,
+    })
+}

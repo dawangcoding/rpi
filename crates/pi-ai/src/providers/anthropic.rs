@@ -116,7 +116,7 @@ impl AnthropicProvider {
         let messages = self.convert_messages(&context.messages, model, is_oauth, cache_control.clone());
 
         // 基础参数
-        let max_tokens = options.max_tokens.unwrap_or_else(|| model.max_tokens / 3);
+        let max_tokens = options.max_tokens.unwrap_or(model.max_tokens / 3);
 
         let mut body = json!({
             "model": model.id,
@@ -659,7 +659,7 @@ impl AnthropicProvider {
                                 let reason = state
                                     .stop_reason
                                     .clone()
-                                    .unwrap_or_else(|| DoneReason::Stop);
+                                    .unwrap_or(DoneReason::Stop);
                                 let mut final_message = state.partial_message.clone();
                                 final_message.usage = state.usage.clone();
                                 yield Ok(AssistantMessageEvent::Done {
@@ -1022,7 +1022,7 @@ impl AnthropicProvider {
             }
             "message_stop" => {
                 state.finished = true;
-                let reason = state.stop_reason.clone().unwrap_or_else(|| DoneReason::Stop);
+                let reason = state.stop_reason.clone().unwrap_or(DoneReason::Stop);
                 let mut final_message = state.partial_message.clone();
                 final_message.usage = state.usage.clone();
 
@@ -1136,6 +1136,9 @@ impl ApiProvider for AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_fixtures::fixtures::*;
+    use mockito::Server;
+    use futures::StreamExt;
 
     #[test]
     fn test_is_oauth_token() {
@@ -1165,5 +1168,260 @@ mod tests {
         assert_eq!(provider.map_stop_reason("max_tokens"), StopReason::Length);
         assert_eq!(provider.map_stop_reason("tool_use"), StopReason::ToolUse);
         assert_eq!(provider.map_stop_reason("refusal"), StopReason::Error);
+    }
+
+    #[tokio::test]
+    async fn test_build_request_basic() {
+        let provider = AnthropicProvider::new();
+        let model = sample_model(Api::Anthropic, Provider::Anthropic);
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let body = provider.build_request_body(&context, &model, &options, "test-api-key");
+
+        // 验证基本结构
+        assert_eq!(body["model"], "claude-3-sonnet-20240229");
+        assert_eq!(body["stream"], true);
+        assert!(body["max_tokens"].as_u64().is_some());
+
+        // 验证消息数组
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+
+        // 验证系统提示词
+        let system = body["system"].as_array().unwrap();
+        assert_eq!(system[0]["type"], "text");
+        assert_eq!(system[0]["text"], "You are a helpful assistant");
+    }
+
+    #[tokio::test]
+    async fn test_stream_text_response() {
+        let mut server = Server::new_async().await;
+        let provider = AnthropicProvider::new();
+
+        // 构建 SSE 响应 - 使用正确的格式
+        let sse_body = r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_123456","type":"message","role":"assistant","model":"claude-3-sonnet","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":10}}
+
+event: message_stop
+data: {"type":"message_stop"}
+"#;
+
+        let mock = server.mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_body)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::Anthropic, Provider::Anthropic);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Say hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let mut stream = provider.stream(&context, &model, &options).await.unwrap();
+
+        let mut events = vec![];
+        while let Some(event) = stream.next().await {
+            events.push(event.unwrap());
+        }
+
+        // 验证事件序列
+        assert!(!events.is_empty());
+        
+        // 应该有 Start 事件
+        assert!(matches!(events[0], AssistantMessageEvent::Start { .. }));
+
+        // 查找 TextDelta 事件
+        let text_deltas: Vec<_> = events.iter().filter_map(|e| match e {
+            AssistantMessageEvent::TextDelta { delta, .. } => Some(delta.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(text_deltas, vec!["Hello", " world"]);
+
+        // 验证 Done 事件
+        assert!(matches!(events.last().unwrap(), AssistantMessageEvent::Done { .. }));
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_stream_tool_call() {
+        let mut server = Server::new_async().await;
+        let provider = AnthropicProvider::new();
+
+        // 构建包含 tool_use 的 SSE 响应
+        let sse_body = r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","model":"claude-3-sonnet","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_123","name":"get_weather","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"location\":"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"Paris\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}}
+
+event: message_stop
+data: {"type":"message_stop"}
+"#;
+
+        let mock = server.mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_body)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::Anthropic, Provider::Anthropic);
+        model.base_url = server.url();
+
+        let tool = sample_tool("get_weather", "Get weather for a location");
+        let context = sample_context_with_tools(
+            "You are a helpful assistant",
+            vec![sample_user_message("What's the weather in Paris?")],
+            vec![tool],
+        );
+        let options = sample_stream_options("test-api-key");
+
+        let mut stream = provider.stream(&context, &model, &options).await.unwrap();
+
+        let mut events = vec![];
+        while let Some(event) = stream.next().await {
+            events.push(event.unwrap());
+        }
+
+        // 验证 ToolCall 事件
+        let tool_call_starts: Vec<_> = events.iter().filter(|e| matches!(e, AssistantMessageEvent::ToolCallStart { .. })).collect();
+        assert!(!tool_call_starts.is_empty(), "Expected at least one ToolCallStart event");
+
+        let tool_call_deltas: Vec<_> = events.iter().filter(|e| matches!(e, AssistantMessageEvent::ToolCallDelta { .. })).collect();
+        assert!(!tool_call_deltas.is_empty(), "Expected at least one ToolCallDelta event");
+
+        // 验证 Done 事件存在
+        assert!(matches!(events.last().unwrap(), AssistantMessageEvent::Done { .. }));
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_stream_thinking() {
+        let mut server = Server::new_async().await;
+        let provider = AnthropicProvider::new();
+
+        // 构建包含 thinking 的 SSE 响应
+        let sse_body = r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_think","type":"message","role":"assistant","model":"claude-3-sonnet","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think about this..."}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc123"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"The answer is 42."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15}}
+
+event: message_stop
+data: {"type":"message_stop"}
+"#;
+
+        let mock = server.mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_body)
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::Anthropic, Provider::Anthropic);
+        model.base_url = server.url();
+        model.reasoning = true;
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("What is the meaning of life?")]);
+        let options = sample_stream_options("test-api-key");
+
+        let mut stream = provider.stream(&context, &model, &options).await.unwrap();
+
+        let mut events = vec![];
+        while let Some(event) = stream.next().await {
+            events.push(event.unwrap());
+        }
+
+        // 验证 Thinking 事件
+        let thinking_deltas: Vec<_> = events.iter().filter_map(|e| match e {
+            AssistantMessageEvent::ThinkingDelta { delta, .. } => Some(delta.clone()),
+            _ => None,
+        }).collect();
+        assert!(!thinking_deltas.is_empty());
+        assert!(thinking_deltas[0].contains("Let me think"));
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_stream_error_response() {
+        let mut server = Server::new_async().await;
+        let provider = AnthropicProvider::new();
+
+        let error_json = r#"{"error": {"type": "rate_limit_error", "message": "Rate limit exceeded"}}"#;
+
+        // 因为有重试机制，需要设置多次期望
+        let mock = server.mock("POST", "/v1/messages")
+            .with_status(429)
+            .with_header("content-type", "application/json")
+            .with_body(error_json)
+            .expect(4) // 重试3次+初始请求
+            .create_async()
+            .await;
+
+        let mut model = sample_model(Api::Anthropic, Provider::Anthropic);
+        model.base_url = server.url();
+
+        let context = sample_context("You are a helpful assistant", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-api-key");
+
+        let result = provider.stream(&context, &model, &options).await;
+        assert!(result.is_err());
+
+        mock.assert_async().await;
     }
 }

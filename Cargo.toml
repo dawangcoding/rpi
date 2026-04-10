@@ -31,8 +31,19 @@ ignore = "0.4"
 globset = "0.4"
 directories = "6"
 serde_yaml = "0.9"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
 tokio-util = { version = "0.7", features = ["codec"] }
 pin-project-lite = "0.2"
 bytes = "1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+
+# 测试依赖
+mockito = "1"
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
+tokio-test = "0.4"

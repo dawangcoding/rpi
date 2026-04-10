@@ -43,7 +43,8 @@ pub fn parse_partial_json(input: &str) -> Option<serde_json::Value> {
 
 /// 尝试修复不完整的 JSON
 fn try_fix_json(input: &str) -> String {
-    let mut result = input.trim().to_string();
+    let trimmed_input = input.trim();
+    let mut result = trimmed_input.to_string();
     
     // 统计括号
     let open_braces = result.chars().filter(|&c| c == '{').count();
@@ -67,10 +68,9 @@ fn try_fix_json(input: &str) -> String {
         result.push(']');
     }
     
-    // 处理尾部逗号
-    if result.ends_with(',') {
-        result.pop();
-    }
+    // 处理对象内部的尾部逗号（如 {"a": 1, "b": 2,}）
+    // 使用正则式思路：找到所有 ,} 和 ,] 并替换为 } 和 ]
+    result = result.replace(",}", "}").replace(",]", "]");
     
     result
 }
@@ -235,38 +235,64 @@ impl Default for IncrementalJsonParser {
 /// 用于处理可能跨多个数据块到达的 JSON 数据
 #[derive(Debug, Clone)]
 pub struct StreamingJsonParser {
-    parser: IncrementalJsonParser,
+    buffer: String,
 }
 
 impl StreamingJsonParser {
     /// 创建新的流式 JSON 解析器
     pub fn new() -> Self {
         Self {
-            parser: IncrementalJsonParser::new(),
+            buffer: String::new(),
         }
     }
     
     /// 处理新的数据块，返回解析出的所有完整 JSON 对象
     pub fn feed(&mut self, chunk: &str) -> Vec<serde_json::Value> {
-        self.parser.append(chunk);
+        self.buffer.push_str(chunk);
         let mut results = Vec::new();
         
-        // 尝试解析，如果成功则继续尝试（可能有多个对象）
-        while let Some(value) = self.parser.try_parse_and_clear() {
-            results.push(value);
+        // 尝试解析缓冲区中的完整 JSON 对象
+        // 注意：这里使用严格的解析，不尝试修复不完整的 JSON
+        loop {
+            // 尝试找到完整的 JSON 对象
+            if let Some((value, consumed)) = Self::try_extract_json(&self.buffer) {
+                results.push(value);
+                // 移除已解析的部分
+                self.buffer.drain(..consumed);
+            } else {
+                break;
+            }
         }
         
         results
     }
     
+    /// 尝试从缓冲区开头提取一个完整的 JSON 对象
+    /// 返回解析后的值和消耗的字符数
+    fn try_extract_json(buffer: &str) -> Option<(serde_json::Value, usize)> {
+        let trimmed = buffer.trim_start();
+        let leading_ws = buffer.len() - trimmed.len();
+        
+        // 尝试不同长度的前缀
+        for end in 1..=trimmed.len() {
+            let candidate = &trimmed[..end];
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate) {
+                // 成功解析，返回结果和消耗的总字符数
+                return Some((value, leading_ws + end));
+            }
+        }
+        
+        None
+    }
+    
     /// 获取当前缓冲区
     pub fn buffer(&self) -> &str {
-        self.parser.buffer()
+        &self.buffer
     }
     
     /// 清空缓冲区
     pub fn clear(&mut self) {
-        self.parser.clear();
+        self.buffer.clear();
     }
 }
 

@@ -9,11 +9,32 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Agent 消息 - 可以是 LLM 消息或自定义消息
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum AgentMessage {
     Llm(Message),
     // 未来可扩展自定义消息类型
+}
+
+impl Serialize for AgentMessage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // 直接序列化内部的 Message，不包装在 AgentMessage 中
+        match self {
+            AgentMessage::Llm(msg) => msg.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // 直接反序列化为 Message，然后包装为 AgentMessage
+        Message::deserialize(deserializer).map(AgentMessage::Llm)
+    }
 }
 
 impl AgentMessage {
@@ -52,16 +73,13 @@ impl AgentMessage {
 
 /// 工具执行模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ToolExecutionMode {
     Sequential,
+    #[default]
     Parallel,
 }
 
-impl Default for ToolExecutionMode {
-    fn default() -> Self {
-        ToolExecutionMode::Parallel
-    }
-}
 
 /// 工具执行结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +153,15 @@ pub trait AgentTool: Send + Sync {
     ) -> anyhow::Result<AgentToolResult>;
 }
 
+/// 将 AgentTool 转换为 LLM API 使用的 Tool 格式
+pub fn agent_tool_to_llm_tool(tool: &dyn AgentTool) -> pi_ai::types::Tool {
+    pi_ai::types::Tool {
+        name: tool.name().to_string(),
+        description: tool.description().to_string(),
+        parameters: tool.parameters(),
+    }
+}
+
 /// Agent 上下文
 pub struct AgentContext {
     pub system_prompt: String,
@@ -179,6 +206,13 @@ pub enum AgentEvent {
     // Agent 生命周期
     AgentStart,
     AgentEnd { messages: Vec<AgentMessage> },
+
+    // 上下文窗口警告
+    ContextWarning {
+        usage_percent: f64,
+        total_tokens: usize,
+        context_window: usize,
+    },
 
     // Turn 生命周期
     TurnStart,
@@ -282,16 +316,13 @@ impl AgentState {
 
 /// 队列模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum QueueMode {
     All,
+    #[default]
     OneAtATime,
 }
 
-impl Default for QueueMode {
-    fn default() -> Self {
-        QueueMode::OneAtATime
-    }
-}
 
 /// 待处理消息队列
 pub struct PendingMessageQueue {
@@ -339,5 +370,40 @@ impl PendingMessageQueue {
     /// 清空队列
     pub fn clear(&mut self) {
         self.messages.clear();
+    }
+}
+
+#[cfg(test)]
+mod serialization_tests {
+    use super::*;
+    use pi_ai::types::{Message, AssistantMessage, Api, Provider};
+    
+    #[test]
+    fn test_agent_message_json() {
+        let user_msg = AgentMessage::user("Hello");
+        let json = serde_json::to_string_pretty(&user_msg).unwrap();
+        println!("User message JSON:\n{}\n", json);
+        
+        // Try to deserialize back
+        let result: Result<AgentMessage, _> = serde_json::from_str(&json);
+        println!("Deserialization result: {:?}\n", result.is_ok());
+        if let Err(ref e) = result {
+            println!("Error: {}", e);
+        }
+        
+        let assistant_msg = AgentMessage::Llm(Message::Assistant(AssistantMessage::new(
+            Api::Anthropic,
+            Provider::Anthropic,
+            "claude-3"
+        )));
+        let json2 = serde_json::to_string_pretty(&assistant_msg).unwrap();
+        println!("Assistant message JSON:\n{}\n", json2);
+        
+        // Try to deserialize back
+        let result2: Result<AgentMessage, _> = serde_json::from_str(&json2);
+        println!("Deserialization result: {:?}\n", result2.is_ok());
+        if let Err(ref e) = result2 {
+            println!("Error: {}", e);
+        }
     }
 }

@@ -176,8 +176,7 @@ pub fn parse_json_stream_events(data: &str) -> Vec<serde_json::Value> {
     data.lines()
         .filter(|line| !line.is_empty())
         .filter_map(|line| {
-            if line.starts_with("data: ") {
-                let json_str = &line[6..];
+            if let Some(json_str) = line.strip_prefix("data: ") {
                 if json_str == "[DONE]" {
                     return None;
                 }

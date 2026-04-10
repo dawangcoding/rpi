@@ -6,12 +6,17 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use pi_agent::agent::Agent;
 use pi_agent::types::*;
+use pi_agent::ContextWindowManager;
 use pi_ai::types::*;
+use pi_ai::{EstimateTokenCounter, TokenCounter};
 use tokio_util::sync::CancellationToken;
 
 use super::system_prompt::*;
 use super::tools;
-use super::session_manager::SessionManager;
+use super::session_manager::{SessionManager, CompactionRecord};
+use super::permissions::{PermissionManager, PermissionCheckResult};
+use super::compaction::{SessionCompactor, CompactionResult};
+use super::extensions::{ExtensionManager, ExtensionLoader, ExtensionContext};
 use crate::config::AppConfig;
 
 /// 会话统计
@@ -57,6 +62,11 @@ pub struct AgentSession {
     config: AgentSessionConfig,
     stats: Arc<RwLock<SessionStats>>,
     session_manager: Option<SessionManager>,
+    permission_manager: Arc<RwLock<PermissionManager>>,
+    context_manager: Arc<ContextWindowManager>,
+    compactor: Arc<SessionCompactor>,
+    compaction_history: Arc<RwLock<Vec<CompactionRecord>>>,
+    extension_manager: ExtensionManager,
 }
 
 impl AgentSession {
@@ -156,11 +166,56 @@ impl AgentSession {
         // 会话管理器
         let session_manager = SessionManager::new(&config.app_config)?;
         
+        // 初始化权限管理器
+        let permission_config = config.app_config.permissions.clone().unwrap_or_default();
+        let permission_manager = Arc::new(RwLock::new(PermissionManager::new(permission_config)));
+
+        // 初始化上下文窗口管理器
+        let token_counter: Arc<dyn TokenCounter> = Arc::new(EstimateTokenCounter::new());
+        let context_window = config.model.context_window as usize;
+        let context_manager = Arc::new(ContextWindowManager::new(token_counter.clone(), context_window));
+
+        // 初始化会话压缩器
+        let compactor = Arc::new(SessionCompactor::new(token_counter, context_window));
+        let compaction_history = Arc::new(RwLock::new(Vec::new()));
+
+        // 初始化扩展管理器
+        let mut extension_manager = ExtensionManager::new();
+        let extension_loader = ExtensionLoader::new();
+        
+        // 扫描扩展（目前只扫描，不加载实际扩展，因为 Trait Object 需要具体实现）
+        let _manifests = extension_loader.scan_extensions();
+        if !_manifests.is_empty() {
+            tracing::info!("Found {} extension(s) in {:?}", _manifests.len(), extension_loader.extensions_dir());
+        }
+        
+        // 创建扩展上下文并激活扩展
+        let extension_ctx = ExtensionContext::new(
+            config.cwd.clone(),
+            config.app_config.clone(),
+            session_id.clone(),
+            "global"
+        );
+        extension_manager.activate_all(&extension_ctx).await?;
+        
+        // 获取扩展注册的工具并合并到工具列表
+        let extension_tools = extension_manager.get_all_tools();
+        if !extension_tools.is_empty() {
+            tracing::info!("Loaded {} tool(s) from extensions", extension_tools.len());
+            // 注意：扩展工具在当前架构下需要在 Agent 创建前添加
+            // 这里先记录，后续如果需要支持动态工具注册需要重构
+        }
+
         Ok(Self {
             agent,
             config,
             stats,
             session_manager: Some(session_manager),
+            permission_manager,
+            context_manager,
+            compactor,
+            compaction_history,
+            extension_manager,
         })
     }
     
@@ -208,6 +263,16 @@ impl AgentSession {
         self.stats.blocking_read().session_id.clone()
     }
     
+    /// 获取会话 ID (异步版本)
+    pub async fn session_id_async(&self) -> String {
+        self.stats.read().await.session_id.clone()
+    }
+    
+    /// 获取会话目录
+    pub fn sessions_dir(&self) -> Option<std::path::PathBuf> {
+        self.session_manager.as_ref().map(|mgr| mgr.sessions_dir().to_path_buf())
+    }
+    
     /// 获取配置引用
     pub fn config(&self) -> &AgentSessionConfig {
         &self.config
@@ -216,6 +281,156 @@ impl AgentSession {
     /// 更新会话统计中的会话文件路径
     pub async fn set_session_file(&self, file: Option<String>) {
         self.stats.write().await.session_file = file;
+    }
+    
+    /// 获取权限管理器
+    pub fn permission_manager(&self) -> Arc<RwLock<PermissionManager>> {
+        self.permission_manager.clone()
+    }
+    
+    /// 检查工具权限
+    pub async fn check_tool_permission(&self, tool_name: &str) -> PermissionCheckResult {
+        self.permission_manager.read().await.check_tool_permission(tool_name)
+    }
+    
+    /// 检查 Bash 命令权限
+    pub async fn check_bash_command(&self, command: &str) -> PermissionCheckResult {
+        self.permission_manager.read().await.check_bash_command(command)
+    }
+    
+    /// 授予工具权限
+    pub async fn grant_tool(&self, tool_name: &str) {
+        self.permission_manager.write().await.grant_tool(tool_name);
+    }
+    
+    /// 撤销工具权限
+    pub async fn revoke_tool(&self, tool_name: &str) {
+        self.permission_manager.write().await.revoke_tool(tool_name);
+    }
+
+    /// 获取当前上下文使用情况
+    pub async fn context_usage(&self) -> pi_agent::ContextUsage {
+        let messages = self.agent.state().await.messages;
+        self.context_manager.estimate_usage(&messages)
+    }
+
+    /// 获取上下文窗口管理器
+    pub fn context_manager(&self) -> Arc<ContextWindowManager> {
+        self.context_manager.clone()
+    }
+    
+    /// Fork 当前会话
+    /// 
+    /// 从当前会话的某个消息位置创建分支
+    /// 
+    /// # Arguments
+    /// * `fork_at_message_index` - fork 的消息索引，None 表示保留全部消息
+    /// 
+    /// # Returns
+    /// 返回新会话的 ID
+    pub async fn fork(&self, fork_at_message_index: Option<usize>) -> anyhow::Result<String> {
+        if let Some(mgr) = &self.session_manager {
+            let session_id = self.session_id();
+            mgr.fork_session(&session_id, fork_at_message_index).await
+        } else {
+            anyhow::bail!("Session manager not available")
+        }
+    }
+
+    /// 手动触发压缩
+    pub async fn compact(&self) -> anyhow::Result<CompactionResult> {
+        let state = self.agent.state().await;
+        let messages = &state.messages;
+
+        if messages.len() < 10 {
+            anyhow::bail!("Not enough messages to compact (minimum 10)");
+        }
+
+        // 执行压缩
+        let result = self.compactor.compact(messages, &self.config.model).await?;
+
+        // 应用压缩结果到 agent 的消息列表
+        // 注意：这里需要修改 agent 的内部状态，我们通过重置并重新添加消息来实现
+        let mut new_messages: Vec<AgentMessage> = messages.clone();
+        self.compactor.apply_compaction(&mut new_messages, &result);
+
+        // 更新 agent 状态（通过重置并重新加载）
+        self.agent.reset().await;
+        
+        // 重新添加系统提示词后的消息
+        for msg in new_messages {
+            // 使用 steer 方法添加消息到队列
+            self.agent.steer(msg).await;
+        }
+
+        // 记录压缩历史
+        self.compaction_history.write().await.push(result.record.clone());
+
+        // 保存会话
+        self.save_with_compaction().await?;
+
+        Ok(result)
+    }
+
+    /// 检查并自动压缩（在 prompt 前调用）
+    pub async fn auto_compact_if_needed(&self) -> anyhow::Result<Option<CompactionResult>> {
+        let state = self.agent.state().await;
+        let messages = &state.messages;
+
+        if !self.compactor.needs_compaction(messages) {
+            return Ok(None);
+        }
+
+        // 需要压缩，执行压缩
+        match self.compact().await {
+            Ok(result) => Ok(Some(result)),
+            Err(e) => {
+                tracing::warn!("Auto-compaction failed: {}", e);
+                Ok(None)
+            }
+        }
+    }
+
+    /// 检查是否需要压缩
+    pub async fn needs_compaction(&self) -> bool {
+        let state = self.agent.state().await;
+        self.compactor.needs_compaction(&state.messages)
+    }
+
+    /// 获取压缩历史
+    pub async fn compaction_history(&self) -> Vec<CompactionRecord> {
+        self.compaction_history.read().await.clone()
+    }
+
+    /// 获取压缩器
+    pub fn compactor(&self) -> Arc<SessionCompactor> {
+        self.compactor.clone()
+    }
+
+    /// 获取扩展管理器
+    pub fn extension_manager(&self) -> &ExtensionManager {
+        &self.extension_manager
+    }
+
+    /// 关闭会话，清理资源
+    pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        // 停用所有扩展
+        self.extension_manager.deactivate_all().await?;
+        Ok(())
+    }
+
+    /// 保存会话（带压缩历史）
+    async fn save_with_compaction(&self) -> anyhow::Result<()> {
+        if let Some(mgr) = &self.session_manager {
+            let state = self.agent.state().await;
+            let history = self.compaction_history.read().await.clone();
+            mgr.save_session_with_compaction(
+                &self.stats.read().await.session_id,
+                &state.messages,
+                &history,
+            ).await?;
+        }
+        Ok(())
     }
 }
 

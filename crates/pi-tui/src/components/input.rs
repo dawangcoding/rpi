@@ -94,7 +94,7 @@ impl Input {
     /// 设置文本
     pub fn set_text(&mut self, text: &str) {
         self.text = text.to_string();
-        self.cursor = self.cursor.min(self.text.len());
+        self.cursor = self.text.len(); // 将光标移动到文本末尾
         self.scroll_offset = 0;
         self.needs_render = true;
         self.dismiss_autocomplete();
@@ -141,6 +141,13 @@ impl Input {
         
         self.needs_render = true;
         self.update_autocomplete();
+    }
+
+    /// 插入文本（在当前光标位置）
+    pub fn insert_text(&mut self, text: &str) {
+        for ch in text.chars() {
+            self.insert_char(ch);
+        }
     }
 
     /// 删除光标前的字符（Backspace）
@@ -465,11 +472,7 @@ impl Input {
 
         // 计算滚动偏移，使光标保持可见
         let half_width = available_width / 2;
-        let scroll = if cursor_display_pos < half_width {
-            0
-        } else {
-            cursor_display_pos - half_width
-        };
+        let scroll = cursor_display_pos.saturating_sub(half_width);
 
         // 将显示宽度转换回字符索引
         let mut current_width = 0;
@@ -521,7 +524,7 @@ impl Input {
             let end = (start + max_visible).min(suggestions.items.len());
 
             // 顶部边框
-            lines.push(format!("{}", "─".repeat(width)));
+            lines.push("─".repeat(width).to_string());
 
             for i in start..end {
                 let item = &suggestions.items[i];
@@ -543,7 +546,7 @@ impl Input {
             }
 
             // 底部边框
-            lines.push(format!("{}", "─".repeat(width)));
+            lines.push("─".repeat(width).to_string());
         }
 
         lines
@@ -592,10 +595,10 @@ impl Component for Input {
                 if let Some((idx, ch)) = char_idx {
                     format!("\x1b[7m{}\x1b[0m{}", ch, &visible_text[idx + ch.len_utf8()..])
                 } else {
-                    format!("\x1b[7m \x1b[0m")
+                    "\x1b[7m \x1b[0m".to_string()
                 }
             } else {
-                format!("\x1b[7m \x1b[0m")
+                "\x1b[7m \x1b[0m".to_string()
             };
 
             line.push_str(before);

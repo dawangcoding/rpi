@@ -3,7 +3,6 @@
 //! 实现 Google Gemini API 的流式调用支持
 
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -820,4 +819,115 @@ struct PromptFeedback {
     block_reason: Option<String>,
     #[serde(rename = "safetyRatings")]
     safety_ratings: Option<Vec<SafetyRating>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_fixtures::fixtures::*;
+
+    // 注意：Google Provider 的 URL 构建包含模型 ID，mock 测试较复杂
+    // 这里主要测试不需要网络的功能
+
+    #[test]
+    fn test_build_url() {
+        let provider = GoogleProvider::new();
+        let model = sample_model(Api::Google, Provider::Google);
+        let url = provider.build_url(&model, "test-api-key");
+
+        assert!(url.contains("/v1beta/models/"));
+        assert!(url.contains(":streamGenerateContent"));
+        assert!(url.contains("key=test-api-key"));
+        assert!(url.contains("alt=sse"));
+    }
+
+    #[test]
+    fn test_convert_messages() {
+        let provider = GoogleProvider::new();
+        let model = sample_model(Api::Google, Provider::Google);
+
+        let context = sample_context(
+            "You are a helpful assistant",
+            vec![
+                sample_user_message("Hello"),
+                Message::Assistant(sample_assistant_message("Hi there!")),
+            ],
+        );
+
+        let contents = provider.convert_messages(&context, &model);
+
+        assert_eq!(contents.len(), 2);
+        assert_eq!(contents[0].role, "user");
+        assert_eq!(contents[1].role, "model");
+    }
+
+    #[test]
+    fn test_convert_messages_with_tool() {
+        let provider = GoogleProvider::new();
+        let model = sample_model(Api::Google, Provider::Google);
+
+        let mut assistant_msg = sample_assistant_message("Let me check");
+        assistant_msg.content.push(ContentBlock::ToolCall(
+            ToolCall::new("tool_123", "get_weather", serde_json::json!({"city": "Paris"}))
+        ));
+
+        let context = sample_context(
+            "You are helpful",
+            vec![
+                sample_user_message("What's the weather?"),
+                Message::Assistant(assistant_msg),
+                sample_tool_result("tool_123", "get_weather", "Sunny, 25°C"),
+            ],
+        );
+
+        let contents = provider.convert_messages(&context, &model);
+
+        // 应该有用户消息、助手消息（包含 functionCall）和工具结果
+        assert!(!contents.is_empty());
+
+        // 找到包含 functionCall 的消息
+        let assistant_content = contents.iter().find(|c| c.role == "model");
+        assert!(assistant_content.is_some());
+    }
+
+    #[test]
+    fn test_convert_tools() {
+        let provider = GoogleProvider::new();
+        let tools = vec![
+            sample_tool("get_weather", "Get weather info"),
+            sample_tool("search", "Search the web"),
+        ];
+
+        let google_tools = provider.convert_tools(&tools);
+
+        assert_eq!(google_tools.len(), 1);
+        let func_decls = &google_tools[0].function_declarations;
+        assert_eq!(func_decls.len(), 2);
+        assert_eq!(func_decls[0].name, "get_weather");
+        assert_eq!(func_decls[1].name, "search");
+    }
+
+    #[test]
+    fn test_build_request_body() {
+        let provider = GoogleProvider::new();
+        let model = sample_model(Api::Google, Provider::Google);
+        let context = sample_context("You are helpful", vec![sample_user_message("Hello")]);
+        let options = sample_stream_options("test-key");
+
+        let body = provider.build_request_body(&context, &model, &options);
+
+        assert!(!body.contents.is_empty());
+        assert!(body.system_instruction.is_some());
+        assert!(body.safety_settings.is_some());
+        assert!(body.generation_config.is_some());
+    }
+
+    #[test]
+    fn test_safety_settings() {
+        let provider = GoogleProvider::new();
+        let settings = provider.safety_settings();
+
+        assert_eq!(settings.len(), 4);
+        assert!(settings.iter().all(|s| s.threshold == "BLOCK_NONE"));
+    }
 }

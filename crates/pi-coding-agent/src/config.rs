@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::core::permissions::ToolPermissionConfig;
+
 /// 应用配置
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
@@ -36,6 +38,10 @@ pub struct AppConfig {
     /// 会话目录
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions_dir: Option<String>,
+
+    /// 工具权限配置
+    #[serde(default)]
+    pub permissions: Option<ToolPermissionConfig>,
 }
 
 /// 自定义模型配置
@@ -111,14 +117,20 @@ impl AppConfig {
         }
     }
 
-    /// 获取 API Key (先查配置，再查环境变量)
+    /// 获取 API Key (先查 OAuth token，再查配置，最后查环境变量)
     pub fn get_api_key(&self, provider: &str) -> Option<String> {
-        // 1. 先检查配置
+        // 1. 先检查 OAuth token 存储
+        let token_storage = crate::core::auth::TokenStorage::new();
+        if let Some(token) = token_storage.get_valid_token(provider) {
+            return Some(token);
+        }
+
+        // 2. 检查配置
         if let Some(key) = self.api_keys.get(provider) {
             return Some(key.clone());
         }
 
-        // 2. 检查环境变量
+        // 3. 检查环境变量
         Self::get_api_key_from_env(provider)
     }
 

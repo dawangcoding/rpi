@@ -27,17 +27,14 @@ pub fn is_kitty_protocol_active() -> bool {
 
 /// 按键事件类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum KeyEventType {
+    #[default]
     Press,
     Repeat,
     Release,
 }
 
-impl Default for KeyEventType {
-    fn default() -> Self {
-        KeyEventType::Press
-    }
-}
 
 /// 按键标识符
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -490,13 +487,12 @@ pub fn parse_key(data: &str) -> Option<Key> {
     let kitty_active = is_kitty_protocol_active();
 
     // 当 Kitty protocol 激活时，某些序列有特殊含义
-    if kitty_active {
-        if data == "\x1b\r" || data == "\n" {
+    if kitty_active
+        && (data == "\x1b\r" || data == "\n") {
             return Some(
                 Key::new(KeyId::Enter, Modifiers { shift: true, ..Default::default() }).with_raw(data),
             );
         }
-    }
 
     // 遗留序列映射
     let legacy_map: std::collections::HashMap<&str, (KeyId, Modifiers)> = [
@@ -606,7 +602,7 @@ pub fn parse_key(data: &str) -> Option<Key> {
             let ch = data.chars().nth(1)?;
             let code = ch as u32;
             // Ctrl+Alt+字母 (code 1-26)
-            if code >= 1 && code <= 26 {
+            if (1..=26).contains(&code) {
                 let letter = (code + 96) as u8 as char;
                 return Some(
                     Key::new(KeyId::Char(letter), Modifiers { ctrl: true, alt: true, ..Default::default() })
@@ -626,7 +622,7 @@ pub fn parse_key(data: &str) -> Option<Key> {
         let code = ch as u32;
 
         // Ctrl+字母 (code 1-26)
-        if code >= 1 && code <= 26 {
+        if (1..=26).contains(&code) {
             let letter = (code + 96) as u8 as char;
             return Some(
                 Key::new(KeyId::Char(letter), Modifiers { ctrl: true, ..Default::default() }).with_raw(data),
@@ -634,7 +630,7 @@ pub fn parse_key(data: &str) -> Option<Key> {
         }
 
         // 可打印字符 (32-126)
-        if code >= 32 && code <= 126 {
+        if (32..=126).contains(&code) {
             return Some(Key::new(KeyId::Char(ch), Modifiers::default()).with_raw(data));
         }
     }
@@ -647,8 +643,8 @@ fn codepoint_to_key_id(codepoint: u32, base_layout_key: Option<u32>) -> Option<K
     let normalized = normalize_kitty_functional_codepoint(codepoint);
 
     // 检查是否是拉丁字母、数字或符号
-    let is_latin = normalized >= 97 && normalized <= 122; // a-z
-    let is_digit = normalized >= 48 && normalized <= 57; // 0-9
+    let is_latin = (97..=122).contains(&normalized); // a-z
+    let is_digit = (48..=57).contains(&normalized); // 0-9
     let is_known_symbol = (normalized as u8 as char).is_ascii() && is_symbol_key(normalized as u8 as char);
 
     // 使用 base layout key 只有当 codepoint 不是已知的拉丁字母、数字或符号
@@ -674,8 +670,8 @@ fn codepoint_to_key_id(codepoint: u32, base_layout_key: Option<u32>) -> Option<K
         cp if cp == ARROW_DOWN as u32 => Some(KeyId::Down),
         cp if cp == ARROW_LEFT as u32 => Some(KeyId::Left),
         cp if cp == ARROW_RIGHT as u32 => Some(KeyId::Right),
-        cp if cp >= 48 && cp <= 57 => Some(KeyId::Char(cp as u8 as char)), // 0-9
-        cp if cp >= 97 && cp <= 122 => Some(KeyId::Char(cp as u8 as char)), // a-z
+        cp if (48..=57).contains(&cp) => Some(KeyId::Char(cp as u8 as char)), // 0-9
+        cp if (97..=122).contains(&cp) => Some(KeyId::Char(cp as u8 as char)), // a-z
         cp if is_symbol_key(cp as u8 as char) => Some(KeyId::Char(cp as u8 as char)),
         _ => None,
     }
@@ -878,7 +874,7 @@ pub fn get_ctrl_char(key: char) -> Option<char> {
     let ch = key.to_lowercase().next().unwrap_or(key);
     let code = ch as u32;
 
-    if (code >= 97 && code <= 122) // a-z
+    if (97..=122).contains(&code) // a-z
         || ch == '['
         || ch == '\\'
         || ch == ']'
@@ -889,7 +885,7 @@ pub fn get_ctrl_char(key: char) -> Option<char> {
 
     // 处理 - 作为 _（US 键盘上相同的物理键）
     if ch == '-' {
-        return Some(31 as u8 as char); // 与 Ctrl+_ 相同
+        return Some(31_u8 as char); // 与 Ctrl+_ 相同
     }
 
     None

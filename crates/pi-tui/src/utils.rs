@@ -17,7 +17,7 @@ thread_local! {
 
 /// 检查字符是否为可打印 ASCII
 fn is_printable_ascii(s: &str) -> bool {
-    s.bytes().all(|b| b >= 0x20 && b <= 0x7e)
+    s.bytes().all(|b| (0x20..=0x7e).contains(&b))
 }
 
 /// 提取 ANSI 转义序列
@@ -48,7 +48,7 @@ pub fn extract_ansi_code(s: &str, pos: usize) -> Option<(String, usize)> {
             while j < s.len() {
                 let c = bytes[j];
                 // CSI 序列结束字符: @-~
-                if c >= 0x40 && c <= 0x7e {
+                if (0x40..=0x7e).contains(&c) {
                     let code = s[pos..=j].to_string();
                     return Some((code, j + 1 - pos));
                 }
@@ -102,7 +102,7 @@ fn char_width(c: char) -> usize {
     let cp = c as u32;
     
     // Regional indicator symbols (国旗) 通常显示为 2 宽度
-    if cp >= 0x1f1e6 && cp <= 0x1f1ff {
+    if (0x1f1e6..=0x1f1ff).contains(&cp) {
         return 2;
     }
     
@@ -278,8 +278,10 @@ pub fn truncate_to_width_with_ellipsis(s: &str, max_width: usize, ellipsis: &str
         result.push_str(ellipsis);
     }
     
-    // 添加重置代码
-    result.push_str("\x1b[0m");
+    // 如果有未处理的 ANSI 代码，添加重置代码
+    if !pending_ansi.is_empty() {
+        result.push_str("\x1b[0m");
+    }
     
     result
 }

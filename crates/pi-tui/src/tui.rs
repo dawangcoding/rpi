@@ -34,7 +34,9 @@ pub trait Focusable {
 
 /// 覆盖层定位锚点
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum OverlayAnchor {
+    #[default]
     Center,
     TopLeft,
     TopRight,
@@ -46,11 +48,6 @@ pub enum OverlayAnchor {
     RightCenter,
 }
 
-impl Default for OverlayAnchor {
-    fn default() -> Self {
-        OverlayAnchor::Center
-    }
-}
 
 /// 尺寸值（绝对列数或百分比）
 #[derive(Debug, Clone, Copy)]
@@ -77,6 +74,7 @@ impl From<u16> for SizeValue {
 
 /// 覆盖层边距
 #[derive(Debug, Clone, Copy)]
+#[derive(Default)]
 pub struct OverlayMargin {
     pub top: u16,
     pub right: u16,
@@ -96,19 +94,10 @@ impl OverlayMargin {
     }
 }
 
-impl Default for OverlayMargin {
-    fn default() -> Self {
-        Self {
-            top: 0,
-            right: 0,
-            bottom: 0,
-            left: 0,
-        }
-    }
-}
 
 /// 覆盖层选项
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct OverlayOptions {
     /// 宽度（绝对或百分比）
     pub width: Option<SizeValue>,
@@ -132,22 +121,6 @@ pub struct OverlayOptions {
     pub non_capturing: bool,
 }
 
-impl Default for OverlayOptions {
-    fn default() -> Self {
-        Self {
-            width: None,
-            min_width: None,
-            max_height: None,
-            anchor: None,
-            offset_x: None,
-            offset_y: None,
-            row: None,
-            col: None,
-            margin: None,
-            non_capturing: false,
-        }
-    }
-}
 
 /// 内部覆盖层条目
 struct OverlayEntry {
@@ -267,6 +240,86 @@ impl Component for Container {
     }
 }
 
+/// 虚拟视口 - 只渲染可见区域
+pub struct VirtualViewport {
+    /// 所有内容行
+    total_lines: usize,
+    /// 视口高度
+    viewport_height: usize,
+    /// 滚动偏移（从顶部计算）
+    scroll_offset: usize,
+    /// 是否自动跟随底部
+    auto_follow: bool,
+    /// 大历史自动启用阈值
+    threshold: usize,
+}
+
+impl VirtualViewport {
+    pub fn new(viewport_height: usize) -> Self {
+        Self {
+            total_lines: 0,
+            viewport_height,
+            scroll_offset: 0,
+            auto_follow: true,
+            threshold: 1000,
+        }
+    }
+    
+    /// 更新总行数
+    pub fn set_total_lines(&mut self, total: usize) {
+        self.total_lines = total;
+        if self.auto_follow {
+            self.scroll_to_bottom();
+        }
+    }
+    
+    /// 滚动到底部
+    pub fn scroll_to_bottom(&mut self) {
+        if self.total_lines > self.viewport_height {
+            self.scroll_offset = self.total_lines - self.viewport_height;
+        } else {
+            self.scroll_offset = 0;
+        }
+    }
+    
+    /// 向上滚动
+    pub fn scroll_up(&mut self, lines: usize) {
+        self.auto_follow = false;
+        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+    }
+    
+    /// 向下滚动
+    pub fn scroll_down(&mut self, lines: usize) {
+        self.scroll_offset = (self.scroll_offset + lines)
+            .min(self.total_lines.saturating_sub(self.viewport_height));
+        
+        // 如果滚动到底部，重新启用自动跟随
+        if self.scroll_offset >= self.total_lines.saturating_sub(self.viewport_height) {
+            self.auto_follow = true;
+        }
+    }
+    
+    /// 获取当前应该显示的行范围
+    pub fn visible_range(&self) -> std::ops::Range<usize> {
+        let start = self.scroll_offset;
+        let end = (start + self.viewport_height).min(self.total_lines);
+        start..end
+    }
+    
+    /// 是否需要虚拟滚动
+    pub fn is_virtual(&self) -> bool {
+        self.total_lines > self.threshold
+    }
+    
+    /// 设置视口高度
+    pub fn set_viewport_height(&mut self, height: usize) {
+        self.viewport_height = height;
+        if self.auto_follow {
+            self.scroll_to_bottom();
+        }
+    }
+}
+
 /// 主 TUI 结构体 - 差分渲染引擎
 pub struct Tui {
     terminal: Box<dyn Terminal>,
@@ -283,6 +336,10 @@ pub struct Tui {
     prev_viewport_top: usize,
     max_lines_rendered: usize,
     full_redraw_count: usize,
+    /// 批量更新模式
+    batch_mode: bool,
+    /// 虚拟视口（用于大内容优化）
+    viewport: Option<VirtualViewport>,
 }
 
 impl Tui {
@@ -303,7 +360,36 @@ impl Tui {
             prev_viewport_top: 0,
             max_lines_rendered: 0,
             full_redraw_count: 0,
+            batch_mode: false,
+            viewport: None,
         }
+    }
+    
+    /// 批量更新模式 - 多个组件变更合并为一次渲染
+    /// 调用 begin_batch() 后，所有 invalidate 只标记但不触发渲染
+    /// 调用 end_batch() 时执行一次统一渲染
+    pub fn begin_batch(&mut self) {
+        self.batch_mode = true;
+    }
+    
+    pub fn end_batch(&mut self) -> Result<()> {
+        self.batch_mode = false;
+        // 执行统一渲染
+        if self.needs_render {
+            self.render()?;
+        }
+        Ok(())
+    }
+    
+    /// 设置虚拟视口
+    pub fn set_viewport(&mut self, viewport: VirtualViewport) {
+        self.viewport = Some(viewport);
+        self.needs_render = true;
+    }
+    
+    /// 获取虚拟视口的可变引用
+    pub fn viewport_mut(&mut self) -> Option<&mut VirtualViewport> {
+        self.viewport.as_mut()
     }
     
     /// 获取根容器的可变引用
@@ -314,9 +400,12 @@ impl Tui {
     /// 标记需要重渲染
     pub fn invalidate(&mut self) {
         self.needs_render = true;
-        self.root.invalidate();
-        for overlay in &mut self.overlays {
-            overlay.component.invalidate();
+        // 批量模式下不立即触发渲染，只标记
+        if !self.batch_mode {
+            self.root.invalidate();
+            for overlay in &mut self.overlays {
+                overlay.component.invalidate();
+            }
         }
     }
     
@@ -404,12 +493,7 @@ impl Tui {
     
     /// 获取最顶层的可见覆盖层
     fn get_topmost_visible_overlay(&self) -> Option<usize> {
-        for i in (0..self.overlays.len()).rev() {
-            if !self.overlays[i].hidden.load(Ordering::SeqCst) && !self.overlays[i].options.non_capturing {
-                return Some(i);
-            }
-        }
-        None
+        (0..self.overlays.len()).rev().find(|&i| !self.overlays[i].hidden.load(Ordering::SeqCst) && !self.overlays[i].options.non_capturing)
     }
     
     /// 设置焦点
@@ -504,11 +588,7 @@ impl Tui {
         self.prev_buffer = new_lines;
         self.prev_width = width;
         self.prev_height = height;
-        self.prev_viewport_top = if new_lines_len > height as usize {
-            new_lines_len - height as usize
-        } else {
-            0
-        };
+        self.prev_viewport_top = new_lines_len.saturating_sub(height as usize);
         self.needs_render = false;
         
         self.terminal.flush()?;

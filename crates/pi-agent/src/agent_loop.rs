@@ -5,9 +5,11 @@
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use futures::future::BoxFuture;
+use futures::StreamExt;
 use pi_ai::types::*;
 
 use crate::types::*;
+use crate::context_manager::ContextWindowManager;
 
 /// Agent 循环配置
 pub struct AgentLoopConfig {
@@ -20,6 +22,9 @@ pub struct AgentLoopConfig {
     pub cache_retention: Option<CacheRetention>,
     pub session_id: Option<String>,
     pub max_retry_delay_ms: Option<u64>,
+
+    /// 上下文窗口管理器
+    pub context_manager: Option<Arc<ContextWindowManager>>,
 
     /// 消息转换函数（AgentMessage -> LLM Message）
     pub convert_to_llm: Arc<dyn Fn(&[AgentMessage]) -> Vec<Message> + Send + Sync>,
@@ -269,43 +274,171 @@ async fn stream_assistant_response(
         context.messages.clone()
     };
 
+    // 上下文窗口管理：检查使用情况并裁剪
+    let mut messages = messages;
+    if let Some(ref context_manager) = config.context_manager {
+        let usage = context_manager.estimate_usage(&messages);
+
+        // 发出警告
+        if context_manager.should_warn(&usage) {
+            emit(AgentEvent::ContextWarning {
+                usage_percent: usage.usage_percent,
+                total_tokens: usage.total_tokens,
+                context_window: usage.context_window,
+            });
+        }
+
+        // 如果需要裁剪
+        if context_manager.needs_trimming(&usage) {
+            let target_tokens = context_manager.context_window_size() - context_manager.reserve_for_output();
+            context_manager.trim_messages(&mut messages, target_tokens);
+        }
+    }
+
     // 转换为 LLM 消息
     let llm_messages = (config.convert_to_llm)(&messages);
 
+    // 转换工具为 LLM 格式
+    let llm_tools: Vec<Tool> = context
+        .tools
+        .iter()
+        .map(|t| agent_tool_to_llm_tool(t.as_ref()))
+        .collect();
+
     // 构建 LLM 上下文
-    let _llm_context = Context {
+    let llm_context = Context {
         system_prompt: Some(context.system_prompt.clone()),
         messages: llm_messages,
-        tools: None, // 工具通过 AgentTool trait 处理
+        tools: if llm_tools.is_empty() {
+            None
+        } else {
+            Some(llm_tools)
+        },
     };
 
     // 解析 API key
-    let _api_key = config
+    let api_key = config
         .get_api_key
         .as_ref()
-        .and_then(|f| f(&format!("{:?}", config.model.provider)));
+        .and_then(|f| f(&format!("{:?}", config.model.provider)))
+        .or_else(|| pi_ai::get_api_key_from_env(&config.model.provider));
 
-    // TODO: 调用 stream_simple 获取事件流
-    // 目前返回一个模拟的 AssistantMessage
-    let assistant_message = AssistantMessage::new(
-        config.model.api.clone(),
-        config.model.provider.clone(),
-        &config.model.id,
-    );
+    // 构建 StreamOptions
+    let stream_options = StreamOptions {
+        temperature: config.temperature.map(|t| t as f32),
+        max_tokens: config.max_tokens.map(|t| t as u64),
+        api_key,
+        transport: config.transport.clone(),
+        cache_retention: config.cache_retention.clone(),
+        session_id: config.session_id.clone(),
+        headers: None,
+        max_retry_delay_ms: config.max_retry_delay_ms,
+        metadata: None,
+    };
 
-    let agent_message = AgentMessage::Llm(Message::Assistant(assistant_message.clone()));
+    // 调用 pi_ai::stream() 获取事件流
+    let mut event_stream = pi_ai::stream(&llm_context, &config.model, &stream_options).await?;
 
-    // 发出 message_start
-    emit(AgentEvent::MessageStart {
-        message: agent_message.clone(),
-    });
+    // 消费事件流
+    let mut final_message: Option<AssistantMessage> = None;
+    let mut current_partial: Option<AssistantMessage> = None;
+    let mut started = false;
 
-    // 添加到上下文
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                let aborted = current_partial
+                    .unwrap_or_else(|| {
+                        AssistantMessage::new(
+                            config.model.api.clone(),
+                            config.model.provider.clone(),
+                            &config.model.id,
+                        )
+                    })
+                    .with_stop_reason(StopReason::Aborted);
+                final_message = Some(aborted);
+                break;
+            }
+            next = event_stream.next() => {
+                match next {
+                    Some(Ok(event)) => {
+                        match &event {
+                            AssistantMessageEvent::Start { partial } => {
+                                current_partial = Some(partial.clone());
+                                if !started {
+                                    started = true;
+                                    let agent_msg = AgentMessage::Llm(Message::Assistant(partial.clone()));
+                                    emit(AgentEvent::MessageStart { message: agent_msg });
+                                }
+                            }
+                            AssistantMessageEvent::Done { message, .. } => {
+                                final_message = Some(message.clone());
+                                break;
+                            }
+                            AssistantMessageEvent::Error { error, .. } => {
+                                final_message = Some(error.clone());
+                                break;
+                            }
+                            AssistantMessageEvent::TextStart { partial, .. }
+                            | AssistantMessageEvent::TextDelta { partial, .. }
+                            | AssistantMessageEvent::TextEnd { partial, .. }
+                            | AssistantMessageEvent::ThinkingStart { partial, .. }
+                            | AssistantMessageEvent::ThinkingDelta { partial, .. }
+                            | AssistantMessageEvent::ThinkingEnd { partial, .. }
+                            | AssistantMessageEvent::ToolCallStart { partial, .. }
+                            | AssistantMessageEvent::ToolCallDelta { partial, .. }
+                            | AssistantMessageEvent::ToolCallEnd { partial, .. } => {
+                                current_partial = Some(partial.clone());
+                            }
+                        }
+
+                        // 对每个非终结事件发出 MessageUpdate
+                        if !matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }) {
+                            if let Some(ref partial) = current_partial {
+                                let agent_msg = AgentMessage::Llm(Message::Assistant(partial.clone()));
+                                emit(AgentEvent::MessageUpdate {
+                                    message: agent_msg,
+                                    event: event.clone(),
+                                });
+                            }
+                        }
+                    }
+                    Some(Err(e)) => {
+                        tracing::error!("Stream error: {}", e);
+                        let error_msg = AssistantMessage::new(
+                            config.model.api.clone(),
+                            config.model.provider.clone(),
+                            &config.model.id,
+                        )
+                        .with_stop_reason(StopReason::Error)
+                        .with_error_message(e.to_string());
+                        final_message = Some(error_msg);
+                        break;
+                    }
+                    None => {
+                        let msg = current_partial.unwrap_or_else(|| {
+                            AssistantMessage::new(
+                                config.model.api.clone(),
+                                config.model.provider.clone(),
+                                &config.model.id,
+                            )
+                        });
+                        final_message = Some(msg);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let assistant = final_message.expect("should have a final message after stream loop");
+    let agent_message = AgentMessage::Llm(Message::Assistant(assistant));
+
+    // 添加到 context
     context.messages.push(agent_message.clone());
 
-    // TODO: 消费事件流，发出 message_update
-
-    // 发出 message_end
+    // 发出 MessageEnd
     emit(AgentEvent::MessageEnd {
         message: agent_message.clone(),
     });
@@ -680,5 +813,248 @@ async fn execute_tool_call(
         emit(AgentEvent::MessageEnd { message: agent_msg });
 
         Ok((msg, true))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_fixtures::fixtures::*;
+    use crate::default_convert_to_llm;
+
+    #[test]
+    fn test_agent_tool_to_llm_tool_conversion() {
+        let mock_tool = MockTool::new("test_tool", "test result");
+        let llm_tool = agent_tool_to_llm_tool(&mock_tool);
+        
+        assert_eq!(llm_tool.name, "test_tool");
+        assert_eq!(llm_tool.description, "Mock tool for testing");
+        assert!(llm_tool.parameters.is_object());
+        
+        // 验证参数结构
+        let params = llm_tool.parameters.as_object().unwrap();
+        assert!(params.contains_key("type"));
+        assert!(params.contains_key("properties"));
+        assert!(params.contains_key("required"));
+    }
+
+    #[test]
+    fn test_extract_tool_calls_from_assistant_message() {
+        // 创建包含工具调用的消息
+        let tool_call = ToolCall::new("call_123", "search", serde_json::json!({"query": "test"}));
+        let assistant = AssistantMessage::new(Api::Anthropic, Provider::Anthropic, "claude-3-sonnet")
+            .with_content(vec![ContentBlock::ToolCall(tool_call.clone())]);
+        let message = AgentMessage::Llm(Message::Assistant(assistant));
+        
+        let tool_calls = extract_tool_calls(&message);
+        
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "call_123");
+        assert_eq!(tool_calls[0].name, "search");
+    }
+
+    #[test]
+    fn test_extract_tool_calls_from_non_assistant_message() {
+        // 从用户消息中提取应该返回空
+        let message = AgentMessage::user("Hello");
+        let tool_calls = extract_tool_calls(&message);
+        
+        assert!(tool_calls.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tool_calls_no_tool_calls() {
+        // 助手消息但没有工具调用
+        let assistant = AssistantMessage::new(Api::Anthropic, Provider::Anthropic, "claude-3-sonnet")
+            .with_content(vec![ContentBlock::Text(TextContent::new("Hello"))]);
+        let message = AgentMessage::Llm(Message::Assistant(assistant));
+        
+        let tool_calls = extract_tool_calls(&message);
+        
+        assert!(tool_calls.is_empty());
+    }
+
+    #[test]
+    fn test_agent_loop_config_creation() {
+        let model = sample_agent_state().model;
+        let config = AgentLoopConfig {
+            model,
+            thinking_level: ThinkingLevel::Off,
+            thinking_budgets: None,
+            temperature: None,
+            max_tokens: None,
+            transport: None,
+            cache_retention: None,
+            session_id: None,
+            max_retry_delay_ms: None,
+            context_manager: None,
+            convert_to_llm: Arc::new(default_convert_to_llm),
+            transform_context: None,
+            get_api_key: None,
+            get_steering_messages: None,
+            get_follow_up_messages: None,
+            tool_execution: ToolExecutionMode::Parallel,
+            before_tool_call: None,
+            after_tool_call: None,
+        };
+        
+        // 验证配置创建成功
+        assert_eq!(config.thinking_level, ThinkingLevel::Off);
+        assert_eq!(config.tool_execution, ToolExecutionMode::Parallel);
+        assert!(config.temperature.is_none());
+        assert!(config.max_tokens.is_none());
+    }
+
+    #[test]
+    fn test_agent_loop_config_with_tools() {
+        let model = sample_agent_state().model;
+        let tools = sample_mock_tools();
+        
+        let config = AgentLoopConfig {
+            model,
+            thinking_level: ThinkingLevel::Medium,
+            thinking_budgets: None,
+            temperature: Some(0.7),
+            max_tokens: Some(4096),
+            transport: None,
+            cache_retention: None,
+            session_id: Some("test-session".to_string()),
+            max_retry_delay_ms: Some(5000),
+            context_manager: None,
+            convert_to_llm: Arc::new(default_convert_to_llm),
+            transform_context: None,
+            get_api_key: None,
+            get_steering_messages: None,
+            get_follow_up_messages: None,
+            tool_execution: ToolExecutionMode::Sequential,
+            before_tool_call: None,
+            after_tool_call: None,
+        };
+        
+        assert_eq!(config.thinking_level, ThinkingLevel::Medium);
+        assert_eq!(config.tool_execution, ToolExecutionMode::Sequential);
+        assert_eq!(config.temperature, Some(0.7));
+        assert_eq!(config.max_tokens, Some(4096));
+        assert_eq!(config.session_id, Some("test-session".to_string()));
+        assert_eq!(config.max_retry_delay_ms, Some(5000));
+    }
+
+    #[test]
+    fn test_default_convert_to_llm_in_config() {
+        let messages = vec![
+            AgentMessage::user("Hello"),
+            AgentMessage::user("World"),
+        ];
+        
+        let convert_fn = default_convert_to_llm;
+        let llm_messages = convert_fn(&messages);
+        
+        assert_eq!(llm_messages.len(), 2);
+    }
+
+    #[test]
+    fn test_tool_execution_mode_enum() {
+        assert_eq!(ToolExecutionMode::Sequential as i32, ToolExecutionMode::Sequential as i32);
+        assert_eq!(ToolExecutionMode::Parallel as i32, ToolExecutionMode::Parallel as i32);
+        assert_ne!(
+            std::mem::discriminant(&ToolExecutionMode::Sequential),
+            std::mem::discriminant(&ToolExecutionMode::Parallel)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mock_tool_execution() {
+        let mock_tool = MockTool::new("test_tool", "test result");
+        let result = mock_tool.execute(
+            "call_1",
+            serde_json::json!({"input": "test"}),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        assert!(result.is_ok());
+        let tool_result = result.unwrap();
+        assert!(!tool_result.content.is_empty());
+        
+        // 验证内容包含预期的结果
+        let text_content = tool_result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.clone()) } else { None })
+            .collect::<String>();
+        assert_eq!(text_content, "test result");
+    }
+
+    #[tokio::test]
+    async fn test_mock_error_tool_execution() {
+        let error_tool = MockErrorTool::new("error_tool", "Something went wrong");
+        let result = error_tool.execute(
+            "call_1",
+            serde_json::json!({}),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("Something went wrong"));
+    }
+
+    #[tokio::test]
+    async fn test_mock_tool_with_cancellation() {
+        let mock_tool = MockTool::new("test_tool", "result");
+        let cancel = CancellationToken::new();
+        
+        // 取消 token
+        cancel.cancel();
+        
+        // MockTool 不检查取消状态，所以仍然会返回结果
+        // 这个测试主要验证接口兼容性
+        let result = mock_tool.execute(
+            "call_1",
+            serde_json::json!({"input": "test"}),
+            cancel,
+            None,
+        ).await;
+        
+        // MockTool 的实现不检查取消，所以应该成功
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_agent_context_creation() {
+        let context = AgentContext {
+            system_prompt: "You are a helpful assistant".to_string(),
+            messages: vec![AgentMessage::user("Hello")],
+            tools: vec![],
+        };
+        
+        assert_eq!(context.system_prompt, "You are a helpful assistant");
+        assert_eq!(context.messages.len(), 1);
+        assert!(context.tools.is_empty());
+    }
+
+    #[test]
+    fn test_agent_context_clone() {
+        let context = AgentContext {
+            system_prompt: "Test".to_string(),
+            messages: vec![AgentMessage::user("Hello")],
+            tools: vec![],
+        };
+        
+        let cloned = context.clone();
+        assert_eq!(cloned.system_prompt, context.system_prompt);
+        assert_eq!(cloned.messages.len(), context.messages.len());
+    }
+
+    #[test]
+    fn test_agent_context_debug() {
+        let context = AgentContext {
+            system_prompt: "Test".to_string(),
+            messages: vec![],
+            tools: vec![],
+        };
+        
+        let debug_str = format!("{:?}", context);
+        assert!(debug_str.contains("AgentContext"));
+        assert!(debug_str.contains("Test"));
     }
 }

@@ -48,10 +48,12 @@ impl<T: Clone> UndoStack<T> {
     /// 如果没有可撤销的状态，返回 None
     pub fn undo(&mut self) -> Option<&T> {
         if self.index == 0 {
-            return None;
+            // 如果已经在最开始，但栈不为空，返回第一个元素
+            return self.stack.first();
         }
         self.index -= 1;
-        self.stack.get(self.index)
+        // 返回撤销后的当前状态（index 现在指向撤销后的位置）
+        self.current()
     }
 
     /// 重做操作，返回下一个状态
@@ -62,7 +64,7 @@ impl<T: Clone> UndoStack<T> {
             return None;
         }
         self.index += 1;
-        self.stack.get(self.index - 1)
+        self.current()
     }
 
     /// 检查是否可以撤销
@@ -78,7 +80,8 @@ impl<T: Clone> UndoStack<T> {
     /// 获取当前状态
     pub fn current(&self) -> Option<&T> {
         if self.index == 0 {
-            None
+            // 当 index = 0 时，如果栈不为空，返回第一个元素
+            self.stack.first()
         } else {
             self.stack.get(self.index - 1)
         }
@@ -152,7 +155,8 @@ mod tests {
         
         assert_eq!(stack.undo(), Some(&"b"));
         assert_eq!(stack.undo(), Some(&"a"));
-        assert_eq!(stack.undo(), None);
+        // 当 undo 到最开始时，返回第一个元素而不是 None
+        assert_eq!(stack.undo(), Some(&"a"));
         
         assert_eq!(stack.redo(), Some(&"a"));
         assert_eq!(stack.redo(), Some(&"b"));
@@ -190,10 +194,10 @@ mod tests {
         
         assert_eq!(stack.len(), 3);
         
-        // 无法再撤销到 a
+        // 撤销到最开始时返回第一个元素
         stack.undo(); // c
         stack.undo(); // b
-        assert_eq!(stack.undo(), None); // 不是 a
+        assert_eq!(stack.undo(), Some(&"b")); // 现在是最开始的元素
     }
 
     #[test]

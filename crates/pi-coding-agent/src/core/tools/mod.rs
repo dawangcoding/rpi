@@ -18,4 +18,3 @@ pub use write::WriteTool;
 pub use grep::GrepTool;
 pub use find::FindTool;
 pub use ls::LsTool;
-pub use truncate::{truncate_output_head, truncate_output_tail, TruncationResult, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES};

@@ -267,6 +267,7 @@ pub struct Usage {
 /// 用户消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMessage {
+    #[serde(skip)]
     pub role: String,
     pub content: UserContent,
     pub timestamp: i64,
@@ -293,6 +294,7 @@ impl UserMessage {
 /// 助手消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantMessage {
+    #[serde(skip)]
     pub role: String,
     pub content: Vec<ContentBlock>,
     pub api: Api,
@@ -371,6 +373,7 @@ impl AssistantMessage {
 /// 工具结果消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultMessage {
+    #[serde(skip)]
     pub role: String,
     #[serde(rename = "toolCallId")]
     pub tool_call_id: String,

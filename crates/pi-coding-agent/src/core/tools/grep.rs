@@ -297,3 +297,285 @@ impl AgentTool for GrepTool {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_grep_pattern_match() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello World\nThis is a test\nHello Rust").unwrap();
+        
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "Hello", "path": file_path.to_str().unwrap()}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证匹配结果
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("Hello World"));
+        assert!(text.contains("Hello Rust"));
+        
+        // 验证详情
+        let details = result.details.as_object().unwrap();
+        assert_eq!(details["match_count"], 2);
+        assert_eq!(details["match_limit_reached"], false);
+    }
+
+    #[tokio::test]
+    async fn test_grep_no_match() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello World\nThis is a test").unwrap();
+        
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "Nonexistent", "path": file_path.to_str().unwrap()}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证无匹配结果
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("No matches found"));
+        
+        let details = result.details.as_object().unwrap();
+        assert_eq!(details["match_count"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_grep_case_insensitive() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello World\nHELLO Rust\nhello test").unwrap();
+        
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({
+                "pattern": "hello",
+                "path": file_path.to_str().unwrap(),
+                "caseInsensitive": true
+            }),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证大小写不敏感匹配
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("Hello World"));
+        assert!(text.contains("HELLO Rust"));
+        assert!(text.contains("hello test"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_case_sensitive() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello World\nHELLO Rust\nhello test").unwrap();
+        
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({
+                "pattern": "Hello",
+                "path": file_path.to_str().unwrap(),
+                "caseInsensitive": false
+            }),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证大小写敏感匹配
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("Hello World"));
+        // HELLO 和 hello 不应该匹配
+    }
+
+    #[tokio::test]
+    async fn test_grep_with_context() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "line1\nline2\nline3\nmatch\nline5\nline6\nline7").unwrap();
+        
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({
+                "pattern": "match",
+                "path": file_path.to_str().unwrap(),
+                "context": 1
+            }),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证上下文行
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        // 上下文应该包含匹配行前后的行
+        assert!(text.contains("match"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_regex_pattern() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "test123\nabc456\ntest789\nxyz").unwrap();
+        
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "test[0-9]+", "path": file_path.to_str().unwrap()}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证正则匹配
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("test123"));
+        assert!(text.contains("test789"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_directory_search() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("file1.txt"), "Hello from file1").unwrap();
+        std::fs::write(dir.path().join("file2.txt"), "Hello from file2").unwrap();
+        std::fs::write(dir.path().join("file3.txt"), "Goodbye").unwrap();
+        
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "Hello", "path": "."}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证目录搜索
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("file1.txt") || text.contains("file1"));
+        assert!(text.contains("file2.txt") || text.contains("file2"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_with_limit() {
+        let dir = TempDir::new().unwrap();
+        for i in 0..10 {
+            std::fs::write(dir.path().join(format!("file{}.txt", i)), format!("match {}", i)).unwrap();
+        }
+        
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "match", "path": ".", "limit": 5}),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证限制
+        let details = result.details.as_object().unwrap();
+        assert!(details["match_count"].as_u64().unwrap() <= 5);
+    }
+
+    #[tokio::test]
+    async fn test_grep_missing_pattern() {
+        let dir = TempDir::new().unwrap();
+        
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"path": "."}),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing 'pattern' parameter"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_invalid_regex() {
+        let dir = TempDir::new().unwrap();
+        
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "[invalid", "path": "."}),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid regex"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_nonexistent_path() {
+        let dir = TempDir::new().unwrap();
+        
+        let tool = GrepTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({"pattern": "test", "path": "/nonexistent/path"}),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_grep_tool_name() {
+        let tool = GrepTool::new(PathBuf::from("/tmp"));
+        assert_eq!(tool.name(), "grep");
+    }
+
+    #[test]
+    fn test_grep_tool_label() {
+        let tool = GrepTool::new(PathBuf::from("/tmp"));
+        assert_eq!(tool.label(), "Search Files");
+    }
+
+    #[test]
+    fn test_grep_tool_parameters() {
+        let tool = GrepTool::new(PathBuf::from("/tmp"));
+        let params = tool.parameters();
+        
+        assert!(params.is_object());
+        let obj = params.as_object().unwrap();
+        assert!(obj.contains_key("type"));
+        assert!(obj.contains_key("properties"));
+        assert!(obj.contains_key("required"));
+        
+        let properties = obj["properties"].as_object().unwrap();
+        assert!(properties.contains_key("pattern"));
+        assert!(properties.contains_key("path"));
+        assert!(properties.contains_key("caseInsensitive"));
+        assert!(properties.contains_key("context"));
+        assert!(properties.contains_key("limit"));
+    }
+}

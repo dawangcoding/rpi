@@ -192,7 +192,7 @@ pub fn get_jpeg_dimensions(data: &[u8]) -> Option<ImageDimensions> {
         let marker = data[offset + 1];
         
         // SOF0, SOF1, SOF2 标记
-        if marker >= 0xc0 && marker <= 0xc2 {
+        if (0xc0..=0xc2).contains(&marker) {
             let height = u16::from_be_bytes([data[offset + 5], data[offset + 6]]) as u32;
             let width = u16::from_be_bytes([data[offset + 7], data[offset + 8]]) as u32;
             return Some(ImageDimensions { width, height });

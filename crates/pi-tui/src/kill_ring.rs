@@ -3,6 +3,7 @@
 
 /// 推送选项
 #[derive(Debug, Clone, Copy)]
+#[derive(Default)]
 pub struct PushOptions {
     /// 如果是累积，前置（向后删除）或后置（向前删除）
     pub prepend: bool,
@@ -17,14 +18,6 @@ impl PushOptions {
     }
 }
 
-impl Default for PushOptions {
-    fn default() -> Self {
-        Self {
-            prepend: false,
-            accumulate: false,
-        }
-    }
-}
 
 /// Emacs 风格剪贴板环
 /// 

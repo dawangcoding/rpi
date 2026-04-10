@@ -4,6 +4,10 @@ pub mod stream;
 pub mod models;
 pub mod providers;
 pub mod utils;
+pub mod token_counter;
+
+#[cfg(test)]
+pub mod test_fixtures;
 
 // 重导出核心类型，方便直接使用
 pub use types::{
@@ -38,3 +42,27 @@ pub use utils::{
     event_stream::{SseEvent, SseParser, parse_sse_line, parse_json_stream_events},
     json_parse::{parse_partial_json, IncrementalJsonParser, StreamingJsonParser},
 };
+
+// 重导出 token 计数器
+pub use token_counter::{TokenCounter, EstimateTokenCounter, ModelTokenCounter};
+
+/// 初始化并注册所有内置 Provider
+///
+/// 在应用启动时调用此函数，将 Anthropic、OpenAI、Google 三个 Provider
+/// 注册到全局 ApiRegistry 中。重复调用是安全的（会跳过已注册的情况）。
+pub fn init_providers() {
+    use std::sync::Arc;
+
+    // 避免重复注册
+    if has_api_provider(&Api::Anthropic) {
+        return;
+    }
+
+    register_api_provider(Arc::new(providers::AnthropicProvider::new()));
+    register_api_provider(Arc::new(providers::OpenAiProvider::new()));
+    register_api_provider(Arc::new(providers::GoogleProvider::new()));
+    register_api_provider(Arc::new(providers::MistralProvider::new()));
+    register_api_provider(Arc::new(providers::BedrockProvider::new()));
+
+    tracing::debug!("Registered 5 built-in providers: Anthropic, OpenAI(ChatCompletions), Google, Mistral, Bedrock");
+}

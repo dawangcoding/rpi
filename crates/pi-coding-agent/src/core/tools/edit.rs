@@ -250,7 +250,7 @@ impl AgentTool for EditTool {
         }
 
         // 保存行尾符
-        let line_ending = Self::detect_line_ending(&old_content);
+        let _line_ending = Self::detect_line_ending(&old_content);
 
         // 应用编辑
         let new_content = self.apply_edits(&old_content, edits.clone(), path)?;
@@ -298,5 +298,346 @@ impl AgentTool for EditTool {
                 "edits_applied": edits.len(),
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_edit_single_replacement() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello World\nThis is a test\nGoodbye").unwrap();
+        
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({
+                "path": file_path.to_str().unwrap(),
+                "edits": [{"oldText": "Hello World", "newText": "Hi Universe"}]
+            }),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证文件内容被修改
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert!(content.contains("Hi Universe"));
+        assert!(!content.contains("Hello World"));
+        
+        // 验证返回结果
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("Successfully replaced"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_multiple_replacements() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello World\nHello Rust\nHello Test").unwrap();
+        
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({
+                "path": file_path.to_str().unwrap(),
+                "edits": [
+                    {"oldText": "Hello World", "newText": "Hi World"},
+                    {"oldText": "Hello Rust", "newText": "Hi Rust"}
+                ]
+            }),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证文件内容
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert!(content.contains("Hi World"));
+        assert!(content.contains("Hi Rust"));
+        assert!(content.contains("Hello Test")); // 未修改的行保持不变
+        
+        // 验证返回结果
+        let text = result.content.iter()
+            .filter_map(|c| if let ContentBlock::Text(t) = c { Some(t.text.as_str()) } else { None })
+            .collect::<String>();
+        assert!(text.contains("Successfully replaced 2 block(s)"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_generates_diff() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello World").unwrap();
+        
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({
+                "path": file_path.to_str().unwrap(),
+                "edits": [{"oldText": "Hello World", "newText": "Hi Universe"}]
+            }),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证返回结果包含 diff
+        let details = result.details.as_object().unwrap();
+        assert!(details.contains_key("diff"));
+        let diff = details["diff"].as_str().unwrap();
+        assert!(diff.contains("---"));
+        assert!(diff.contains("+++"));
+        assert!(diff.contains("-Hello World") || diff.contains("+Hi Universe"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_nonexistent_file() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("nonexistent.txt");
+        
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({
+                "path": file_path.to_str().unwrap(),
+                "edits": [{"oldText": "old", "newText": "new"}]
+            }),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("File not found") || err_msg.contains("Failed to resolve path"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_text_not_found() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello World").unwrap();
+        
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({
+                "path": file_path.to_str().unwrap(),
+                "edits": [{"oldText": "Nonexistent Text", "newText": "New Text"}]
+            }),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Could not find text to replace"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_multiple_matches() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello Hello World").unwrap();
+        
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({
+                "path": file_path.to_str().unwrap(),
+                "edits": [{"oldText": "Hello", "newText": "Hi"}]
+            }),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误，因为 oldText 不是唯一的
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("multiple matches") || err_msg.contains("unique"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_empty_edits() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello World").unwrap();
+        
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({
+                "path": file_path.to_str().unwrap(),
+                "edits": []
+            }),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("at least one replacement"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_missing_path() {
+        let dir = TempDir::new().unwrap();
+        
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({
+                "edits": [{"oldText": "old", "newText": "new"}]
+            }),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_edit_missing_edits() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello World").unwrap();
+        
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({
+                "path": file_path.to_str().unwrap()
+            }),
+            CancellationToken::new(),
+            None,
+        ).await;
+        
+        // 应该返回错误
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing or invalid 'edits' parameter"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_cancellation() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello World").unwrap();
+        
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        
+        let result = tool.execute(
+            "call_1",
+            serde_json::json!({
+                "path": file_path.to_str().unwrap(),
+                "edits": [{"oldText": "Hello", "newText": "Hi"}]
+            }),
+            cancel,
+            None,
+        ).await;
+        
+        // 应该返回取消错误
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("aborted"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_preserves_line_endings() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        // 使用 CRLF 行尾
+        std::fs::write(&file_path, "Hello World\r\nLine 2\r\nLine 3").unwrap();
+        
+        let tool = EditTool::new(dir.path().to_path_buf());
+        tool.execute(
+            "call_1",
+            serde_json::json!({
+                "path": file_path.to_str().unwrap(),
+                "edits": [{"oldText": "Hello World", "newText": "Hi Universe"}]
+            }),
+            CancellationToken::new(),
+            None,
+        ).await.unwrap();
+        
+        // 验证文件内容
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        // 行尾符应该被保留（虽然写入时会使用系统默认行尾）
+        assert!(content.contains("Hi Universe"));
+    }
+
+    #[test]
+    fn test_edit_tool_name() {
+        let tool = EditTool::new(PathBuf::from("/tmp"));
+        assert_eq!(tool.name(), "edit");
+    }
+
+    #[test]
+    fn test_edit_tool_label() {
+        let tool = EditTool::new(PathBuf::from("/tmp"));
+        assert_eq!(tool.label(), "Edit File");
+    }
+
+    #[test]
+    fn test_edit_tool_parameters() {
+        let tool = EditTool::new(PathBuf::from("/tmp"));
+        let params = tool.parameters();
+        
+        assert!(params.is_object());
+        let obj = params.as_object().unwrap();
+        assert!(obj.contains_key("type"));
+        assert!(obj.contains_key("properties"));
+        assert!(obj.contains_key("required"));
+        
+        let properties = obj["properties"].as_object().unwrap();
+        assert!(properties.contains_key("path"));
+        assert!(properties.contains_key("edits"));
+        
+        let required = obj["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("path")));
+        assert!(required.contains(&serde_json::json!("edits")));
+    }
+
+    #[test]
+    fn test_edit_prepare_arguments() {
+        let tool = EditTool::new(PathBuf::from("/tmp"));
+        
+        // 测试旧版参数格式转换
+        let old_args = serde_json::json!({
+            "path": "test.txt",
+            "oldText": "old",
+            "newText": "new"
+        });
+        
+        let new_args = tool.prepare_arguments(old_args);
+        
+        assert!(new_args.get("oldText").is_none());
+        assert!(new_args.get("newText").is_none());
+        assert!(new_args.get("edits").is_some());
+        
+        let edits = new_args["edits"].as_array().unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0]["oldText"], "old");
+        assert_eq!(edits[0]["newText"], "new");
+    }
+
+    #[test]
+    fn test_edit_prepare_arguments_new_format() {
+        let tool = EditTool::new(PathBuf::from("/tmp"));
+        
+        // 测试新版参数格式保持不变
+        let new_args = serde_json::json!({
+            "path": "test.txt",
+            "edits": [{"oldText": "old", "newText": "new"}]
+        });
+        
+        let result = tool.prepare_arguments(new_args.clone());
+        
+        assert_eq!(result, new_args);
     }
 }

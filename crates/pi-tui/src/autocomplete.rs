@@ -440,7 +440,8 @@ mod tests {
     #[test]
     fn test_apply_completion() {
         let item = AutocompleteItem::new("function");
-        let (new_text, new_pos) = apply_completion("fun| rest", 3, &item, "fun");
+        // 注意：输入不应该包含光标标记 |，cursor_pos 直接指定光标位置
+        let (new_text, new_pos) = apply_completion("fun rest", 3, &item, "fun");
 
         assert_eq!(new_text, "function rest");
         assert_eq!(new_pos, 8);
@@ -450,7 +451,7 @@ mod tests {
     fn test_apply_completion_with_insert_text() {
         let item = AutocompleteItem::new("fn")
             .with_insert_text("function");
-        let (new_text, new_pos) = apply_completion("f|", 1, &item, "f");
+        let (new_text, new_pos) = apply_completion("f", 1, &item, "f");
 
         assert_eq!(new_text, "function");
         assert_eq!(new_pos, 8);

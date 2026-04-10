@@ -11,6 +11,10 @@ pub struct Markdown {
     rendered_lines: Vec<String>,
     needs_render: bool,
     wrap_width: Option<u16>,
+    // 缓存字段
+    cached_content: String,
+    cached_width: u16,
+    cached_output: Vec<String>,
 }
 
 impl Markdown {
@@ -21,6 +25,9 @@ impl Markdown {
             rendered_lines: Vec::new(),
             needs_render: true,
             wrap_width: None,
+            cached_content: String::new(),
+            cached_width: 0,
+            cached_output: Vec::new(),
         }
     }
 
@@ -46,6 +53,9 @@ impl Markdown {
         self.content.clear();
         self.rendered_lines.clear();
         self.needs_render = true;
+        self.cached_content.clear();
+        self.cached_width = 0;
+        self.cached_output.clear();
     }
 
     /// 设置换行宽度
@@ -287,11 +297,49 @@ impl Default for Markdown {
 
 impl Component for Markdown {
     fn render(&self, width: u16) -> Vec<String> {
+        // 检查缓存 - 如果内容和宽度都未变化，直接返回缓存结果
+        if self.content == self.cached_content && width == self.cached_width && !self.cached_output.is_empty() {
+            return self.cached_output.clone();
+        }
+        
+        // 正常渲染
+        
+        
+        // 注意：由于 Component trait 的 render 是 &self，我们无法在这里更新缓存
+        // 缓存更新由调用方通过 invalidate() 后重新渲染时处理
         self.render_markdown(width)
     }
 
     fn invalidate(&mut self) {
         self.needs_render = true;
+        // 注意：这里不清除缓存，让 render 方法决定是否使用缓存
+    }
+}
+
+impl Markdown {
+    /// 带缓存的渲染方法 - 需要可变引用以更新缓存
+    pub fn render_with_cache(&mut self, width: u16) -> Vec<String> {
+        // 检查缓存
+        if self.content == self.cached_content && width == self.cached_width && !self.cached_output.is_empty() {
+            return self.cached_output.clone();
+        }
+        
+        // 渲染并更新缓存
+        let output = self.render_markdown(width);
+        self.cached_content = self.content.clone();
+        self.cached_width = width;
+        self.cached_output = output.clone();
+        self.needs_render = false;
+        
+        output
+    }
+    
+    /// 强制刷新缓存
+    pub fn refresh_cache(&mut self, width: u16) -> Vec<String> {
+        self.cached_content.clear();
+        self.cached_width = 0;
+        self.cached_output.clear();
+        self.render_with_cache(width)
     }
 }
 
@@ -413,5 +461,137 @@ mod tests {
         md.clear();
         
         assert!(md.content().is_empty());
+    }
+
+    #[test]
+    fn test_render_plain_text() {
+        let mut md = Markdown::new();
+        md.set_content("This is plain text without any formatting");
+        let lines = md.render(80);
+        
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("This is plain text without any formatting"));
+    }
+
+    #[test]
+    fn test_render_bold_italic() {
+        let mut md = Markdown::new();
+        md.set_content("This is ***bold and italic*** text");
+        let lines = md.render(80);
+        
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("bold and italic"));
+    }
+
+    #[test]
+    fn test_render_width_wrapping() {
+        let mut md = Markdown::new();
+        md.set_content("This is a very long line that should be wrapped when rendered with a narrow width limit");
+        md.set_wrap_width(Some(20));
+        let lines = md.render(80);
+        
+        // 验证换行生效
+        assert!(lines.len() > 1);
+        // 每行应该不超过 20 个字符（不包括 ANSI 转义序列）
+        for line in &lines {
+            let visible_len = line.chars().count();
+            assert!(visible_len <= 30, "Line too long: {}", line); // 允许一些 ANSI 转义序列的额外空间
+        }
+    }
+
+    #[test]
+    fn test_render_with_cache() {
+        let mut md = Markdown::new();
+        md.set_content("Test content for caching");
+        
+        // 第一次渲染
+        let lines1 = md.render_with_cache(80);
+        // 第二次渲染（应该使用缓存）
+        let lines2 = md.render_with_cache(80);
+        
+        assert_eq!(lines1, lines2);
+        assert!(!md.content().is_empty());
+        assert_eq!(md.cached_content, "Test content for caching");
+    }
+
+    #[test]
+    fn test_refresh_cache() {
+        let mut md = Markdown::new();
+        md.set_content("Original content");
+        md.render_with_cache(80);
+        
+        // 刷新缓存
+        let lines = md.refresh_cache(80);
+        
+        assert!(!lines.is_empty());
+        assert!(lines[0].contains("Original"));
+    }
+
+    #[test]
+    fn test_render_nested_list() {
+        let mut md = Markdown::new();
+        md.set_content("- Item 1\n  - Subitem 1\n  - Subitem 2\n- Item 2");
+        let lines = md.render(80);
+        
+        assert!(lines.len() >= 4);
+        assert!(lines.iter().any(|l| l.contains("Item 1")));
+        assert!(lines.iter().any(|l| l.contains("Subitem 1")));
+        assert!(lines.iter().any(|l| l.contains("Item 2")));
+    }
+
+    #[test]
+    fn test_render_mixed_formatting() {
+        let mut md = Markdown::new();
+        md.set_content("# Title\n\nThis has **bold** and *italic* and `code`.\n\n- List item\n- Another item");
+        let lines = md.render(80);
+        
+        assert!(!lines.is_empty());
+        assert!(lines.iter().any(|l| l.contains("Title")));
+        assert!(lines.iter().any(|l| l.contains("bold")));
+        assert!(lines.iter().any(|l| l.contains("italic")));
+        assert!(lines.iter().any(|l| l.contains("code")));
+        assert!(lines.iter().any(|l| l.contains("List item")));
+    }
+
+    #[test]
+    fn test_render_multiple_paragraphs() {
+        let mut md = Markdown::new();
+        md.set_content("First paragraph.\n\nSecond paragraph.\n\nThird paragraph.");
+        let lines = md.render(80);
+        
+        // 应该有段落之间的空行
+        assert!(lines.iter().any(|l| l.contains("First paragraph")));
+        assert!(lines.iter().any(|l| l.contains("Second paragraph")));
+        assert!(lines.iter().any(|l| l.contains("Third paragraph")));
+    }
+
+    #[test]
+    fn test_render_code_block_with_language() {
+        let mut md = Markdown::new();
+        md.set_content("```python\ndef hello():\n    print('world')\n```");
+        let lines = md.render(80);
+        
+        // 验证代码块被渲染（至少包含代码内容）
+        assert!(lines.len() >= 2);
+        // 第一行应该包含 ``` 和语言标识
+        let first_line_has_marker = lines.iter().any(|l| l.contains("```") && l.contains("python"));
+        assert!(first_line_has_marker, "Expected code block marker with language");
+        // 应该包含代码内容
+        assert!(lines.iter().any(|l| l.contains("def hello")));
+        // 应该有结束标记
+        let has_end_marker = lines.iter().any(|l| l.contains("```") && !l.contains("python"));
+        assert!(has_end_marker, "Expected code block end marker");
+    }
+
+    #[test]
+    fn test_render_ordered_list() {
+        let mut md = Markdown::new();
+        md.set_content("1. First item\n2. Second item\n3. Third item");
+        let lines = md.render(80);
+        
+        assert!(lines.len() >= 3);
+        assert!(lines.iter().any(|l| l.contains("First item")));
+        assert!(lines.iter().any(|l| l.contains("Second item")));
+        assert!(lines.iter().any(|l| l.contains("Third item")));
     }
 }

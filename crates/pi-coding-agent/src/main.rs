@@ -23,6 +23,9 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // 注册所有内置 Provider
+    pi_ai::init_providers();
+
     let args = CliArgs::parse();
 
     // 处理离线模式
@@ -60,7 +63,7 @@ async fn main() -> Result<()> {
 
     // 确定工作目录
     let cwd = args.cwd
-        .map(|p| std::path::PathBuf::from(p))
+        .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap());
 
     // 构建初始 prompt

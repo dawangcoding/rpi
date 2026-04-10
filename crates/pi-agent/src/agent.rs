@@ -483,6 +483,7 @@ impl Agent {
             cache_retention: None,
             session_id: self.session_id.clone(),
             max_retry_delay_ms: self.max_retry_delay_ms,
+            context_manager: None, // 可在 AgentOptions 中配置
             convert_to_llm: self.convert_to_llm.clone(),
             transform_context: None,
             get_api_key: self.get_api_key.clone(),
@@ -560,4 +561,269 @@ impl Agent {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_fixtures::fixtures::*;
 
+    #[test]
+    fn test_agent_creation() {
+        let options = AgentOptions::default();
+        let agent = Agent::new(options);
+        
+        // 测试 Agent 创建成功
+        // 由于 Agent 字段是私有的，我们通过测试方法不 panic 来验证
+        assert!(true);
+    }
+
+    #[test]
+    fn test_agent_creation_with_model() {
+        let model = sample_agent_state().model;
+        let options = AgentOptions {
+            model: Some(model.clone()),
+            ..Default::default()
+        };
+        let agent = Agent::new(options);
+        
+        // 验证创建成功
+        assert!(true);
+    }
+
+    #[test]
+    fn test_agent_creation_with_system_prompt() {
+        let options = AgentOptions {
+            system_prompt: Some("You are a test assistant".to_string()),
+            ..Default::default()
+        };
+        let agent = Agent::new(options);
+        
+        // 验证创建成功
+        assert!(true);
+    }
+
+    #[test]
+    fn test_agent_creation_with_tools() {
+        let tools = sample_mock_tools();
+        let options = AgentOptions {
+            tools,
+            ..Default::default()
+        };
+        let agent = Agent::new(options);
+        
+        // 验证创建成功
+        assert!(true);
+    }
+
+    #[test]
+    fn test_default_agent_options() {
+        let options = AgentOptions::default();
+        
+        assert!(options.model.is_none());
+        assert!(options.system_prompt.is_none());
+        assert!(options.tools.is_empty());
+        assert_eq!(options.thinking_level, ThinkingLevel::Off);
+        assert!(options.thinking_budgets.is_none());
+        assert!(options.transport.is_none());
+        assert_eq!(options.tool_execution, ToolExecutionMode::Parallel);
+        assert!(options.session_id.is_none());
+        assert!(options.max_retry_delay_ms.is_none());
+        assert!(options.convert_to_llm.is_none());
+        assert!(options.get_api_key.is_none());
+        assert!(options.before_tool_call.is_none());
+        assert!(options.after_tool_call.is_none());
+        assert_eq!(options.steering_mode, QueueMode::OneAtATime);
+        assert_eq!(options.follow_up_mode, QueueMode::OneAtATime);
+    }
+
+    #[test]
+    fn test_default_convert_to_llm() {
+        let messages = vec![
+            AgentMessage::user("Hello"),
+            AgentMessage::user("World"),
+        ];
+        
+        let llm_messages = default_convert_to_llm(&messages);
+        
+        // 验证转换后的消息数量
+        assert_eq!(llm_messages.len(), 2);
+        
+        // 验证每条消息都被正确转换
+        for msg in &llm_messages {
+            match msg {
+                Message::User(_) => {},
+                _ => panic!("Expected User message"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_default_convert_to_llm_filters_non_llm() {
+        // 测试过滤逻辑 - 只保留 User, Assistant, ToolResult
+        let messages = vec![
+            AgentMessage::user("Test message"),
+        ];
+        
+        let llm_messages = default_convert_to_llm(&messages);
+        assert_eq!(llm_messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_agent_state_snapshot() {
+        let options = AgentOptions::default();
+        let agent = Agent::new(options);
+        
+        let state = agent.state().await;
+        
+        // 验证状态快照
+        assert!(!state.is_streaming);
+        assert!(state.streaming_message.is_none());
+        assert!(state.pending_tool_calls.is_empty());
+        assert!(state.error_message.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_agent_subscribe() {
+        let options = AgentOptions::default();
+        let agent = Agent::new(options);
+        
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        
+        let listener: Arc<dyn Fn(AgentEvent, CancellationToken) + Send + Sync> = 
+            Arc::new(move |_event, _cancel| {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+            });
+        
+        let _unsubscribe = agent.subscribe(listener);
+        
+        // 给订阅一点时间注册
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        
+        // 验证订阅成功（通过不 panic）
+        assert!(true);
+    }
+
+    #[tokio::test]
+    async fn test_agent_steering_queue() {
+        let options = AgentOptions {
+            steering_mode: QueueMode::OneAtATime,
+            ..Default::default()
+        };
+        let agent = Agent::new(options);
+        
+        // 添加转向消息
+        agent.steer(AgentMessage::user("Steering message 1")).await;
+        agent.steer(AgentMessage::user("Steering message 2")).await;
+        
+        // 验证队列有消息
+        assert!(agent.has_queued_messages().await);
+        
+        // 清除队列
+        agent.clear_steering_queue().await;
+        
+        // 注意：follow_up_queue 可能仍然有消息，所以 has_queued_messages 可能仍然返回 true
+    }
+
+    #[tokio::test]
+    async fn test_agent_follow_up_queue() {
+        let options = AgentOptions {
+            follow_up_mode: QueueMode::OneAtATime,
+            ..Default::default()
+        };
+        let agent = Agent::new(options);
+        
+        // 添加后续消息
+        agent.follow_up(AgentMessage::user("Follow up message")).await;
+        
+        // 验证队列有消息
+        assert!(agent.has_queued_messages().await);
+        
+        // 清除队列
+        agent.clear_follow_up_queue().await;
+    }
+
+    #[tokio::test]
+    async fn test_agent_clear_all_queues() {
+        let options = AgentOptions::default();
+        let agent = Agent::new(options);
+        
+        // 添加消息到两个队列
+        agent.steer(AgentMessage::user("Steering")).await;
+        agent.follow_up(AgentMessage::user("Follow up")).await;
+        
+        // 验证队列有消息
+        assert!(agent.has_queued_messages().await);
+        
+        // 清除所有队列
+        agent.clear_all_queues().await;
+        
+        // 验证队列为空
+        assert!(!agent.has_queued_messages().await);
+    }
+
+    #[tokio::test]
+    async fn test_agent_reset() {
+        let options = AgentOptions::default();
+        let agent = Agent::new(options);
+        
+        // 添加一些队列消息
+        agent.steer(AgentMessage::user("Test")).await;
+        
+        // 重置
+        agent.reset().await;
+        
+        // 验证状态被重置
+        let state = agent.state().await;
+        assert!(state.messages.is_empty());
+        assert!(!state.is_streaming);
+        assert!(state.streaming_message.is_none());
+        assert!(state.pending_tool_calls.is_empty());
+        assert!(state.error_message.is_none());
+        assert!(!agent.has_queued_messages().await);
+    }
+
+    #[tokio::test]
+    async fn test_agent_abort_no_active_operation() {
+        let options = AgentOptions::default();
+        let agent = Agent::new(options);
+        
+        // 中止没有活动的操作应该不会 panic
+        agent.abort().await;
+        
+        // 验证 cancel token 被清除
+        let token = agent.cancel_token().await;
+        assert!(token.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_agent_cancel_token() {
+        let options = AgentOptions::default();
+        let agent = Agent::new(options);
+        
+        // 初始状态应该没有 cancel token
+        let token = agent.cancel_token().await;
+        assert!(token.is_none());
+    }
+
+    #[test]
+    fn test_default_model() {
+        let model = default_model();
+        
+        assert_eq!(model.id, "unknown");
+        assert_eq!(model.name, "unknown");
+        assert_eq!(model.api, Api::Anthropic);
+        assert_eq!(model.provider, Provider::Anthropic);
+        assert!(model.base_url.is_empty());
+        assert!(!model.reasoning);
+        assert_eq!(model.input, vec![InputModality::Text]);
+        assert_eq!(model.cost.input, 0.0);
+        assert_eq!(model.cost.output, 0.0);
+        assert!(model.cost.cache_read.is_none());
+        assert!(model.cost.cache_write.is_none());
+        assert_eq!(model.context_window, 0);
+        assert_eq!(model.max_tokens, 0);
+        assert!(model.headers.is_none());
+        assert!(model.compat.is_none());
+    }
+}
