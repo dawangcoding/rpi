@@ -61,6 +61,10 @@ impl CodingAgentAutocompleteProvider {
         slash_provider.add_command(SlashCommand::new("stats", "Show session statistics"));
         slash_provider.add_command(SlashCommand::new("save", "Save the current session"));
         slash_provider.add_command(SlashCommand::new("fork", "Fork the current session at a message index"));
+        slash_provider.add_command(SlashCommand::new("forks", "List all forks of current session"));
+        slash_provider.add_command(SlashCommand::new("switch", "Switch to a different session or fork"));
+        slash_provider.add_command(SlashCommand::new("delete-fork", "Delete a fork and its descendants"));
+        slash_provider.add_command(SlashCommand::new("tree", "Show session tree structure"));
         slash_provider.add_command(SlashCommand::new("export", "Export session to HTML file").with_alias("export-html"));
         slash_provider.add_command(SlashCommand::new("compact", "Compact conversation history to save context space"));
         slash_provider.add_command(SlashCommand::new("extensions", "List loaded extensions"));
@@ -308,6 +312,7 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                         // 渲染状态栏和输入区域
                         let stats = session.stats().await;
                         status_bar.set_tokens(stats.tokens.total as usize, 200000); // context window
+                        status_bar.set_cost(stats.cost); // 更新成本显示
                         let (term_width, _) = terminal.size();
                         render_status_and_editor(&status_bar, &editor, term_width, &mut stdout)?;
                     }
@@ -412,21 +417,71 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                         render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
                     } else if prompt == "/stats" {
                         let stats = session.stats().await;
-                        message_history.add_system_message("Session stats:".to_string());
-                        message_history.add_system_message(format!(
-                            "  Messages: {} user, {} assistant",
-                            stats.user_messages, stats.assistant_messages
+                        let compaction_history = session.compaction_history().await;
+                        let context_usage = session.context_usage().await;
+                        
+                        let mut output = String::new();
+                        
+                        // 标题
+                        output.push_str("\x1b[1mSession Statistics\x1b[0m\n");
+                        output.push_str("──────────────────────────\n\n");
+                        
+                        // 消息统计
+                        output.push_str(&format!(
+                            "  Messages:    {} (User: {}, Assistant: {})\n",
+                            stats.total_messages, stats.user_messages, stats.assistant_messages
                         ));
-                        message_history.add_system_message(format!(
-                            "  Tool calls: {}", stats.tool_calls
-                        ));
-                        message_history.add_system_message(format!(
-                            "  Tokens: {} total ({} in, {} out)",
-                            stats.tokens.total, stats.tokens.input, stats.tokens.output
-                        ));
-                        message_history.add_system_message(format!(
-                            "  Cost: ${:.4}", stats.cost
-                        ));
+                        output.push_str(&format!("  Tool Calls:  {}\n\n", stats.tool_calls));
+                        
+                        // Token 使用
+                        output.push_str("\x1b[1mToken Usage:\x1b[0m\n");
+                        output.push_str(&format!("  Input:       {:>10} tokens\n", format_number(stats.tokens.input)));
+                        output.push_str(&format!("  Output:      {:>10} tokens\n", format_number(stats.tokens.output)));
+                        if stats.tokens.cache_read > 0 {
+                            output.push_str(&format!("  Cache Read:  {:>10} tokens\n", format_number(stats.tokens.cache_read)));
+                        }
+                        if stats.tokens.cache_write > 0 {
+                            output.push_str(&format!("  Cache Write: {:>10} tokens\n", format_number(stats.tokens.cache_write)));
+                        }
+                        output.push_str(&format!("  Total:       {:>10} tokens\n\n", format_number(stats.tokens.total)));
+                        
+                        // 上下文窗口使用率
+                        let context_window = context_usage.context_window;
+                        if context_window > 0 {
+                            let usage_pct = (stats.tokens.total as f64 / context_window as f64) * 100.0;
+                            output.push_str(&format!(
+                                "  Context Window: {} / {} ({:.1}%)\n\n",
+                                format_number(stats.tokens.total), format_number(context_window as u64), usage_pct
+                            ));
+                        }
+                        
+                        // 成本
+                        if stats.cost > 0.0 {
+                            output.push_str(&format!("\x1b[1mEstimated Cost:\x1b[0m ${:.4}\n\n", stats.cost));
+                        }
+                        
+                        // 压缩信息
+                        if !compaction_history.is_empty() {
+                            output.push_str("\x1b[1mCompaction History:\x1b[0m\n");
+                            output.push_str(&format!("  Total compactions: {}\n", compaction_history.len()));
+                            if let Some(last) = compaction_history.last() {
+                                let saved = last.original_tokens.saturating_sub(last.summary_tokens);
+                                output.push_str(&format!(
+                                    "  Last: {} msgs → summary, saved {} tokens\n",
+                                    last.removed_message_range.1 - last.removed_message_range.0,
+                                    saved
+                                ));
+                            }
+                            output.push('\n');
+                        }
+                        
+                        // 会话信息
+                        output.push_str(&format!("  Session: {}\n", &stats.session_id[..8.min(stats.session_id.len())]));
+                        if let Some(ref file) = stats.session_file {
+                            output.push_str(&format!("  File: {}\n", file));
+                        }
+                        
+                        message_history.add_system_message(output);
                         let (term_width, _) = terminal.size();
                         render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
                     } else if prompt == "/save" {
@@ -653,7 +708,7 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                         } else {
                             ""
                         };
-                        
+
                         if theme_name.is_empty() {
                             // 显示当前主题和可用主题
                             message_history.add_system_message(format!(
@@ -678,27 +733,230 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                         }
                         let (term_width, _) = terminal.size();
                         render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                    } else if prompt == "/forks" {
+                        // 列出当前会话的所有 fork
+                        let session_id = session.session_id_async().await;
+                        if let Some(mgr) = session.session_manager() {
+                            match mgr.list_forks(&session_id).await {
+                                Ok(forks) => {
+                                    if forks.is_empty() {
+                                        message_history.add_system_message("No forks found for current session.".to_string());
+                                    } else {
+                                        let mut output = String::from("Session Forks:\n");
+                                        for (i, fork) in forks.iter().enumerate() {
+                                            let title = fork.title.as_deref().unwrap_or("Untitled");
+                                            let msgs = fork.message_count;
+                                            let id_short = &fork.id[..8.min(fork.id.len())];
+                                            output.push_str(&format!("  {}. {} ({}) - {} messages\n",
+                                                i + 1, title, id_short, msgs));
+                                        }
+                                        message_history.add_system_message(output);
+                                    }
+                                }
+                                Err(e) => {
+                                    message_history.add_system_message(format!("Error listing forks: {}", e));
+                                }
+                            }
+                        } else {
+                            message_history.add_system_message("Session manager not available.".to_string());
+                        }
+                        let (term_width, _) = terminal.size();
+                        render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                    } else if prompt == "/switch" || prompt.starts_with("/switch ") {
+                        let target = if prompt.len() > 8 {
+                            prompt[8..].trim()
+                        } else {
+                            ""
+                        };
+
+                        if target.is_empty() {
+                            message_history.add_system_message("Usage: /switch <session_id or fork number>".to_string());
+                            let (term_width, _) = terminal.size();
+                            render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                            continue;
+                        }
+
+                        let mgr = match session.session_manager() {
+                            Some(m) => m,
+                            None => {
+                                message_history.add_system_message("Session manager not available.".to_string());
+                                let (term_width, _) = terminal.size();
+                                render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                                continue;
+                            }
+                        };
+
+                        let current_id = session.session_id_async().await;
+
+                        // 尝试按编号查找（从 /forks 列表）
+                        let target_id = if let Ok(num) = target.parse::<usize>() {
+                            // 按编号查找
+                            match mgr.list_forks(&current_id).await {
+                                Ok(forks) => {
+                                    if num > 0 && num <= forks.len() {
+                                        Some(forks[num - 1].id.clone())
+                                    } else {
+                                        message_history.add_system_message(format!("Invalid fork number: {}", num));
+                                        None
+                                    }
+                                }
+                                Err(e) => {
+                                    message_history.add_system_message(format!("Error: {}", e));
+                                    None
+                                }
+                            }
+                        } else {
+                            // 按 session_id 前缀匹配
+                            match mgr.find_session_by_prefix(target).await {
+                                Ok(Some(id)) => Some(id),
+                                Ok(None) => {
+                                    message_history.add_system_message(format!("Session not found: {}", target));
+                                    None
+                                }
+                                Err(e) => {
+                                    message_history.add_system_message(format!("Error: {}", e));
+                                    None
+                                }
+                            }
+                        };
+
+                        if let Some(id) = target_id {
+                            // 保存当前会话
+                            if let Err(e) = session.save().await {
+                                message_history.add_system_message(format!("Failed to save current session: {}", e));
+                                let (term_width, _) = terminal.size();
+                                render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                                continue;
+                            }
+
+                            // 加载目标会话
+                            match mgr.load_session(&id).await {
+                                Ok(saved_session) => {
+                                    // 重置 agent 状态并加载新会话的消息
+                                    session.agent().reset().await;
+                                    for msg in saved_session.messages {
+                                        session.agent().steer(msg).await;
+                                    }
+
+                                    // 更新会话 ID
+                                    session.set_session_id(id.clone()).await;
+
+                                    // 清空消息历史并重新加载
+                                    message_history.clear();
+                                    message_history.add_system_message(format!(
+                                        "Switched to session: {} ({})",
+                                        saved_session.metadata.title.as_deref().unwrap_or("Untitled"),
+                                        &id[..8.min(id.len())]
+                                    ));
+                                }
+                                Err(e) => {
+                                    message_history.add_system_message(format!("Failed to load session: {}", e));
+                                }
+                            }
+                        }
+                        let (term_width, _) = terminal.size();
+                        render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                    } else if prompt == "/delete-fork" || prompt.starts_with("/delete-fork ") {
+                        let target = if prompt.len() > 13 {
+                            prompt[13..].trim()
+                        } else {
+                            ""
+                        };
+
+                        if target.is_empty() {
+                            message_history.add_system_message("Usage: /delete-fork <session_id>".to_string());
+                            let (term_width, _) = terminal.size();
+                            render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                            continue;
+                        }
+
+                        let mgr = match session.session_manager() {
+                            Some(m) => m,
+                            None => {
+                                message_history.add_system_message("Session manager not available.".to_string());
+                                let (term_width, _) = terminal.size();
+                                render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                                continue;
+                            }
+                        };
+
+                        // 不允许删除当前活跃会话
+                        let current_id = session.session_id_async().await;
+                        if target == current_id || current_id.starts_with(target) {
+                            message_history.add_system_message("Cannot delete the active session.".to_string());
+                            let (term_width, _) = terminal.size();
+                            render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                            continue;
+                        }
+
+                        // 解析目标 ID（支持前缀匹配）
+                        let target_id = match mgr.find_session_by_prefix(target).await {
+                            Ok(Some(id)) => id,
+                            Ok(None) => {
+                                message_history.add_system_message(format!("Session not found: {}", target));
+                                let (term_width, _) = terminal.size();
+                                render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                                continue;
+                            }
+                            Err(e) => {
+                                message_history.add_system_message(format!("Error: {}", e));
+                                let (term_width, _) = terminal.size();
+                                render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                                continue;
+                            }
+                        };
+
+                        match mgr.delete_fork_tree(&target_id).await {
+                            Ok(count) => {
+                                message_history.add_system_message(format!("Deleted {} session(s).", count));
+                            }
+                            Err(e) => {
+                                message_history.add_system_message(format!("Error: {}", e));
+                            }
+                        }
+                        let (term_width, _) = terminal.size();
+                        render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                    } else if prompt == "/tree" {
+                        let session_id = session.session_id_async().await;
+                        if let Some(mgr) = session.session_manager() {
+                            match mgr.format_session_tree(&session_id).await {
+                                Ok(tree) => {
+                                    message_history.add_system_message(format!("Session Tree:\n{}", tree));
+                                }
+                                Err(e) => {
+                                    message_history.add_system_message(format!("Error: {}", e));
+                                }
+                            }
+                        } else {
+                            message_history.add_system_message("Session manager not available.".to_string());
+                        }
+                        let (term_width, _) = terminal.size();
+                        render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
                     } else if prompt == "/help" {
                         message_history.add_system_message("Available Commands:".to_string());
-                        message_history.add_system_message("  /help        - Show this help message".to_string());
-                        message_history.add_system_message("  /clear       - Clear conversation history".to_string());
-                        message_history.add_system_message("  /model       - Show or change model".to_string());
-                        message_history.add_system_message("  /stats       - Show session statistics".to_string());
-                        message_history.add_system_message("  /save        - Save current session".to_string());
-                        message_history.add_system_message("  /fork        - Fork from current position".to_string());
-                        message_history.add_system_message("  /fork N      - Fork at message index N".to_string());
-                        message_history.add_system_message("  /compact     - Compact conversation history to save context space".to_string());
-                        message_history.add_system_message("  /export      - Export session to HTML".to_string());
+                        message_history.add_system_message("  /help          - Show this help message".to_string());
+                        message_history.add_system_message("  /clear         - Clear conversation history".to_string());
+                        message_history.add_system_message("  /model         - Show or change model".to_string());
+                        message_history.add_system_message("  /stats         - Show session statistics".to_string());
+                        message_history.add_system_message("  /save          - Save current session".to_string());
+                        message_history.add_system_message("  /fork          - Fork from current position".to_string());
+                        message_history.add_system_message("  /fork N        - Fork at message index N".to_string());
+                        message_history.add_system_message("  /forks         - List all forks of current session".to_string());
+                        message_history.add_system_message("  /switch <id>   - Switch to a different session or fork".to_string());
+                        message_history.add_system_message("  /delete-fork <id> - Delete a fork and its descendants".to_string());
+                        message_history.add_system_message("  /tree          - Show session tree structure".to_string());
+                        message_history.add_system_message("  /compact       - Compact conversation history to save context space".to_string());
+                        message_history.add_system_message("  /export        - Export session to HTML".to_string());
                         message_history.add_system_message("  /export path.html - Export to specific path".to_string());
-                        message_history.add_system_message("  /extensions  - List loaded extensions".to_string());
-                        message_history.add_system_message("  /login       - Login with OAuth (anthropic, github-copilot)".to_string());
-                        message_history.add_system_message("  /logout      - Logout from OAuth provider".to_string());
-                        message_history.add_system_message("  /auth        - Show authentication status".to_string());
-                        message_history.add_system_message("  /theme       - Show or switch color theme".to_string());
-                        message_history.add_system_message("  /theme dark  - Switch to dark theme".to_string());
-                        message_history.add_system_message("  /theme light - Switch to light theme".to_string());
-                        message_history.add_system_message("  /exit        - Exit the application".to_string());
-                        message_history.add_system_message("  /quit        - Alias for /exit".to_string());
+                        message_history.add_system_message("  /extensions    - List loaded extensions".to_string());
+                        message_history.add_system_message("  /login         - Login with OAuth (anthropic, github-copilot)".to_string());
+                        message_history.add_system_message("  /logout        - Logout from OAuth provider".to_string());
+                        message_history.add_system_message("  /auth          - Show authentication status".to_string());
+                        message_history.add_system_message("  /theme         - Show or switch color theme".to_string());
+                        message_history.add_system_message("  /theme dark    - Switch to dark theme".to_string());
+                        message_history.add_system_message("  /theme light   - Switch to light theme".to_string());
+                        message_history.add_system_message("  /exit          - Exit the application".to_string());
+                        message_history.add_system_message("  /quit          - Alias for /exit".to_string());
                         let (term_width, _) = terminal.size();
                         render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
                     } else if !prompt.is_empty() {
@@ -819,6 +1077,33 @@ fn sanitize_filename(name: &str) -> String {
         .collect::<String>()
         .trim()
         .replace(' ', "_")
+}
+
+/// 格式化数字（千分位）
+fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_number() {
+        assert_eq!(format_number(0), "0");
+        assert_eq!(format_number(100), "100");
+        assert_eq!(format_number(1000), "1,000");
+        assert_eq!(format_number(1234567), "1,234,567");
+        assert_eq!(format_number(1234567890), "1,234,567,890");
+    }
 }
 
 /// 处理粘贴内容

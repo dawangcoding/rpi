@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Serialize, Deserialize};
 use pi_agent::types::AgentMessage;
 use crate::config::AppConfig;
+use crate::core::agent_session::SessionStats;
 
 /// 压缩记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +43,8 @@ pub struct SavedSession {
     pub messages: Vec<AgentMessage>,
     #[serde(default)]
     pub compaction_history: Vec<CompactionRecord>,
+    #[serde(default)]  // 旧文件兼容：缺失时为 None
+    pub stats: Option<SessionStats>,
 }
 
 /// 会话管理器
@@ -68,7 +71,7 @@ impl SessionManager {
         session_id: &str,
         messages: &[AgentMessage],
     ) -> anyhow::Result<PathBuf> {
-        self.save_session_with_compaction(session_id, messages, &[]).await
+        self.save_session_with_compaction(session_id, messages, &[], None).await
     }
 
     /// 保存会话（带压缩历史）
@@ -77,6 +80,7 @@ impl SessionManager {
         session_id: &str,
         messages: &[AgentMessage],
         compaction_history: &[CompactionRecord],
+        stats: Option<&SessionStats>,  // 新增参数
     ) -> anyhow::Result<PathBuf> {
         let path = self.session_path(session_id);
         
@@ -96,6 +100,7 @@ impl SessionManager {
             },
             messages: messages.to_vec(),
             compaction_history: compaction_history.to_vec(),
+            stats: stats.cloned(),
         };
         
         let json = serde_json::to_string_pretty(&session)?;
@@ -160,6 +165,148 @@ impl SessionManager {
     pub fn sessions_dir(&self) -> &Path {
         &self.sessions_dir
     }
+
+    /// 递归删除指定会话及其所有子分支
+    ///
+    /// # Arguments
+    /// * `session_id` - 要删除的会话 ID
+    ///
+    /// # Returns
+    /// 返回删除的会话数量
+    pub async fn delete_fork_tree(&self, session_id: &str) -> anyhow::Result<usize> {
+        let tree = self.get_session_tree(session_id).await?;
+        let mut deleted = 0;
+        for session in &tree {
+            if let Err(e) = self.delete_session(&session.id).await {
+                eprintln!("Warning: {}", e);
+            } else {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
+    }
+
+    /// 生成会话分支的树形可视化字符串
+    ///
+    /// # Arguments
+    /// * `session_id` - 起始会话 ID（可以是树中的任意节点，会向上追溯到根）
+    ///
+    /// # Returns
+    /// 返回格式化的树形字符串
+    pub async fn format_session_tree(&self, session_id: &str) -> anyhow::Result<String> {
+        // 首先向上追溯到根会话
+        let root_id = self.find_root_session(session_id).await?;
+
+        let sessions = self.list_sessions().await?;
+        let mut output = String::new();
+
+        // 找到根会话
+        let root = sessions
+            .iter()
+            .find(|s| s.id == root_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", root_id))?;
+
+        // 格式化根节点
+        let title = root.title.as_deref().unwrap_or("Untitled");
+        output.push_str(&format!("● {} ({})", title, &root.id[..8.min(root.id.len())]));
+        if root.id == session_id {
+            output.push_str(" [current]");
+        }
+        output.push('\n');
+
+        // 递归格式化子节点
+        self.format_tree_recursive(&sessions, &root_id, "", &mut output, session_id);
+
+        Ok(output)
+    }
+
+    fn format_tree_recursive(
+        &self,
+        sessions: &[SessionMetadata],
+        parent_id: &str,
+        prefix: &str,
+        output: &mut String,
+        current_session_id: &str,
+    ) {
+        let children: Vec<_> = sessions
+            .iter()
+            .filter(|s| s.parent_session_id.as_deref() == Some(parent_id))
+            .collect();
+
+        for (i, child) in children.iter().enumerate() {
+            let is_last = i == children.len() - 1;
+            let connector = if is_last { "└── " } else { "├── " };
+            let child_prefix = if is_last { "    " } else { "│   " };
+
+            let title = child.title.as_deref().unwrap_or("Untitled");
+            let fork_info = child
+                .fork_at_index
+                .map(|idx| format!(" (forked at msg #{})", idx))
+                .unwrap_or_default();
+
+            output.push_str(&format!(
+                "{}{}{} ({}){}",
+                prefix,
+                connector,
+                title,
+                &child.id[..8.min(child.id.len())],
+                fork_info
+            ));
+            if child.id == current_session_id {
+                output.push_str(" [current]");
+            }
+            output.push('\n');
+
+            // 递归处理子节点
+            let new_prefix = format!("{}{}", prefix, child_prefix);
+            self.format_tree_recursive(sessions, &child.id, &new_prefix, output, current_session_id);
+        }
+    }
+
+    /// 向上追溯找到根会话
+    ///
+    /// 从指定会话开始，沿 parent_session_id 向上追溯到根
+    async fn find_root_session(&self, session_id: &str) -> anyhow::Result<String> {
+        let mut current_id = session_id.to_string();
+
+        loop {
+            let sessions = self.list_sessions().await?;
+            let session = sessions
+                .iter()
+                .find(|s| s.id == current_id)
+                .ok_or_else(|| anyhow::anyhow!("Session not found: {}", current_id))?;
+
+            match &session.parent_session_id {
+                Some(parent_id) => {
+                    current_id = parent_id.clone();
+                }
+                None => break,
+            }
+        }
+
+        Ok(current_id)
+    }
+
+    /// 按 ID 前缀查找会话
+    ///
+    /// # Arguments
+    /// * `prefix` - 会话 ID 前缀
+    ///
+    /// # Returns
+    /// 返回匹配的会话 ID，如果没有找到返回 None，如果有多个匹配返回错误
+    pub async fn find_session_by_prefix(&self, prefix: &str) -> anyhow::Result<Option<String>> {
+        let sessions = self.list_sessions().await?;
+        let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(prefix)).collect();
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(Some(matches[0].id.clone())),
+            _ => Err(anyhow::anyhow!(
+                "Ambiguous prefix '{}': {} matches",
+                prefix,
+                matches.len()
+            )),
+        }
+    }
     
     /// 生成新的会话 ID
     pub fn generate_session_id() -> String {
@@ -218,6 +365,7 @@ impl SessionManager {
             },
             messages,
             compaction_history: Vec::new(), // Fork 的会话不继承压缩历史
+            stats: None, // Fork 的会话不继承统计
         };
         
         // 保存新会话文件
@@ -621,7 +769,7 @@ mod tests {
             },
         ];
         
-        let path = manager.save_session_with_compaction(session_id, &messages, &compaction_history).await.unwrap();
+        let path = manager.save_session_with_compaction(session_id, &messages, &compaction_history, None).await.unwrap();
         assert!(path.exists());
         
         let loaded = manager.load_session(session_id).await.unwrap();
@@ -668,5 +816,210 @@ mod tests {
         let messages: Vec<AgentMessage> = vec![];
         let title = extract_title(&messages);
         assert!(title.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_fork_tree() {
+        let (manager, _dir) = create_test_manager();
+        let root_id = "root-for-delete";
+
+        let messages = vec![AgentMessage::user("Root")];
+        manager.save_session(root_id, &messages).await.unwrap();
+
+        // 创建 Fork 链
+        let child1 = manager.fork_session(root_id, None).await.unwrap();
+        let grandchild = manager.fork_session(&child1, None).await.unwrap();
+
+        // 验证所有会话存在
+        assert!(manager.session_exists(root_id));
+        assert!(manager.session_exists(&child1));
+        assert!(manager.session_exists(&grandchild));
+
+        // 删除整个 fork 树（从根开始）
+        let deleted = manager.delete_fork_tree(root_id).await.unwrap();
+        assert_eq!(deleted, 3);
+
+        // 验证所有会话已删除
+        assert!(!manager.session_exists(root_id));
+        assert!(!manager.session_exists(&child1));
+        assert!(!manager.session_exists(&grandchild));
+    }
+
+    #[tokio::test]
+    async fn test_format_session_tree() {
+        let (manager, _dir) = create_test_manager();
+        let root_id = "root-for-tree";
+
+        let messages = vec![AgentMessage::user("Root Session")];
+        manager.save_session(root_id, &messages).await.unwrap();
+
+        // 创建 Fork 链
+        let child1 = manager.fork_session(root_id, Some(1)).await.unwrap();
+        let _grandchild = manager.fork_session(&child1, None).await.unwrap();
+
+        // 格式化树
+        let tree_output = manager.format_session_tree(root_id).await.unwrap();
+
+        // 验证输出包含关键信息
+        assert!(tree_output.contains("Root Session"));
+        assert!(tree_output.contains("[current]"));
+        assert!(tree_output.contains("forked at msg #1"));
+        assert!(tree_output.contains("├──") || tree_output.contains("└──"));
+    }
+
+    #[tokio::test]
+    async fn test_format_session_tree_from_child() {
+        let (manager, _dir) = create_test_manager();
+        let root_id = "root-from-child";
+
+        let messages = vec![AgentMessage::user("Root")];
+        manager.save_session(root_id, &messages).await.unwrap();
+
+        // 创建子会话
+        let child = manager.fork_session(root_id, None).await.unwrap();
+
+        // 从子会话格式化树（应该向上追溯到根）
+        let tree_output = manager.format_session_tree(&child).await.unwrap();
+
+        // 验证包含根会话
+        assert!(tree_output.contains("Root"));
+        // 子会话应该被标记为 current
+        assert!(tree_output.contains("[current]"));
+    }
+
+    #[tokio::test]
+    async fn test_find_session_by_prefix() {
+        let (manager, _dir) = create_test_manager();
+
+        // 创建测试会话
+        let session_id = "abc12345-test-session";
+        let messages = vec![AgentMessage::user("Test")];
+        manager.save_session(session_id, &messages).await.unwrap();
+
+        // 测试精确前缀匹配
+        let result = manager.find_session_by_prefix("abc123").await.unwrap();
+        assert_eq!(result, Some(session_id.to_string()));
+
+        // 测试完整 ID 匹配
+        let result = manager.find_session_by_prefix(session_id).await.unwrap();
+        assert_eq!(result, Some(session_id.to_string()));
+
+        // 测试无匹配
+        let result = manager.find_session_by_prefix("xyz").await.unwrap();
+        assert_eq!(result, None);
+
+        // 创建另一个会话用于测试模糊前缀
+        let session_id2 = "abc67890-another-session";
+        manager.save_session(session_id2, &messages).await.unwrap();
+
+        // 测试模糊前缀（应该返回错误）
+        let result = manager.find_session_by_prefix("abc").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Ambiguous prefix"));
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_not_found() {
+        let (manager, _dir) = create_test_manager();
+
+        // 尝试删除不存在的会话
+        let result = manager.delete_session("non-existent-session").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_find_root_session() {
+        let (manager, _dir) = create_test_manager();
+        let root_id = "root-session-test";
+
+        let messages = vec![AgentMessage::user("Root")];
+        manager.save_session(root_id, &messages).await.unwrap();
+
+        // 创建 Fork 链
+        let child = manager.fork_session(root_id, None).await.unwrap();
+        let grandchild = manager.fork_session(&child, None).await.unwrap();
+
+        // 从孙子节点查找根
+        let found_root = manager.find_root_session(&grandchild).await.unwrap();
+        assert_eq!(found_root, root_id);
+
+        // 从子节点查找根
+        let found_root = manager.find_root_session(&child).await.unwrap();
+        assert_eq!(found_root, root_id);
+
+        // 从根节点查找根
+        let found_root = manager.find_root_session(root_id).await.unwrap();
+        assert_eq!(found_root, root_id);
+    }
+
+    #[tokio::test]
+    async fn test_saved_session_with_stats_serialization() {
+        // 测试带 stats 的 SavedSession 序列化和反序列化
+        use crate::core::agent_session::{SessionStats, TokenStats};
+
+        let (manager, _dir) = create_test_manager();
+        let session_id = "session-with-stats";
+
+        let messages = vec![
+            AgentMessage::user("Hello"),
+            create_assistant_message("Hi there!"),
+        ];
+
+        // 创建 stats
+        let stats = SessionStats {
+            session_id: session_id.to_string(),
+            session_file: Some("test.json".to_string()),
+            user_messages: 1,
+            assistant_messages: 1,
+            tool_calls: 0,
+            tool_results: 0,
+            total_messages: 2,
+            tokens: TokenStats {
+                input: 1000,
+                output: 500,
+                cache_read: 200,
+                cache_write: 100,
+                total: 1500,
+            },
+            cost: 0.015,
+        };
+
+        // 保存带 stats 的会话
+        let path = manager.save_session_with_compaction(session_id, &messages, &[], Some(&stats)).await.unwrap();
+        assert!(path.exists());
+
+        // 加载并验证 stats
+        let loaded = manager.load_session(session_id).await.unwrap();
+        assert!(loaded.stats.is_some());
+        
+        let loaded_stats = loaded.stats.unwrap();
+        assert_eq!(loaded_stats.session_id, session_id);
+        assert_eq!(loaded_stats.user_messages, 1);
+        assert_eq!(loaded_stats.assistant_messages, 1);
+        assert_eq!(loaded_stats.tokens.input, 1000);
+        assert_eq!(loaded_stats.tokens.output, 500);
+        assert_eq!(loaded_stats.tokens.cache_read, 200);
+        assert_eq!(loaded_stats.tokens.cache_write, 100);
+        assert_eq!(loaded_stats.tokens.total, 1500);
+        assert!((loaded_stats.cost - 0.015).abs() < 0.0001);
+    }
+
+    #[tokio::test]
+    async fn test_saved_session_backward_compatibility() {
+        // 测试旧文件（无 stats 字段）的向后兼容性
+        let (manager, _dir) = create_test_manager();
+        let session_id = "old-session";
+
+        let messages = vec![AgentMessage::user("Test")];
+        
+        // 保存不带 stats 的会话（模拟旧文件）
+        let path = manager.save_session(session_id, &messages).await.unwrap();
+        assert!(path.exists());
+
+        // 加载应该成功，stats 为 None
+        let loaded = manager.load_session(session_id).await.unwrap();
+        assert!(loaded.stats.is_none());
+        assert_eq!(loaded.metadata.id, session_id);
+        assert_eq!(loaded.messages.len(), 1);
     }
 }

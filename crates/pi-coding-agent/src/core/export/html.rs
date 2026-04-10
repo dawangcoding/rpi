@@ -382,6 +382,7 @@ mod tests {
             },
             messages,
             compaction_history: vec![],
+            stats: None,
         }
     }
 
@@ -678,6 +679,7 @@ mod tests {
             },
             messages: vec![],
             compaction_history: vec![],
+            stats: None,
         };
         let exporter = HtmlExporter::new();
         

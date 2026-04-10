@@ -284,6 +284,7 @@ pub struct StatusBarComponent {
     is_loading: bool,
     loading_frame: usize,
     needs_render: bool,
+    estimated_cost: f64,  // 新增：估算成本
 }
 
 /// 加载动画帧
@@ -300,7 +301,14 @@ impl StatusBarComponent {
             is_loading: false,
             loading_frame: 0,
             needs_render: true,
+            estimated_cost: 0.0,
         }
+    }
+
+    /// 设置估算成本
+    pub fn set_cost(&mut self, cost: f64) {
+        self.estimated_cost = cost;
+        self.needs_render = true;
     }
 
     /// 设置模型名
@@ -364,13 +372,18 @@ impl Component for StatusBarComponent {
         };
         let left = format!("{}{}", self.model_name, loading_indicator);
 
-        // 中间：Token 使用量
+        // 中间：Token 使用量 + 成本
         let percent = if self.context_window > 0 {
             (self.token_count * 100) / self.context_window
         } else {
             0
         };
-        let center = format!("tokens: {}/{} ({}%)", self.token_count, self.context_window, percent);
+        let cost_str = if self.estimated_cost > 0.0 {
+            format!(" | ${:.2}", self.estimated_cost)
+        } else {
+            String::new()
+        };
+        let center = format!("tokens: {}/{} ({}%){}", self.token_count, self.context_window, percent, cost_str);
 
         // 右侧：会话名
         let right = self.session_name.clone();
@@ -568,5 +581,34 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("──────────"));
         assert!(lines[0].contains("\x1b[2m")); // dim 样式
+    }
+
+    #[test]
+    fn test_status_bar_with_cost() {
+        let mut component = StatusBarComponent::new();
+        component.set_model("claude-3".to_string());
+        component.set_tokens(1000, 4000);
+        component.set_session_name("test-session".to_string());
+        component.set_cost(0.47);
+
+        let lines = component.render(80);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("claude-3"));
+        assert!(lines[0].contains("tokens: 1000/4000 (25%)"));
+        assert!(lines[0].contains("$0.47")); // 成本显示
+        assert!(lines[0].contains("test-session"));
+    }
+
+    #[test]
+    fn test_status_bar_zero_cost_hidden() {
+        let mut component = StatusBarComponent::new();
+        component.set_model("claude-3".to_string());
+        component.set_tokens(1000, 4000);
+        component.set_cost(0.0); // 零成本
+
+        let lines = component.render(80);
+        assert_eq!(lines.len(), 1);
+        // 零成本时不应显示成本
+        assert!(!lines[0].contains("$"));
     }
 }

@@ -24,6 +24,16 @@ pub struct CompactionResult {
     pub record: CompactionRecord,
 }
 
+impl CompactionResult {
+    /// 计算节省的 token 百分比
+    pub fn savings_percentage(&self) -> f64 {
+        if self.original_tokens == 0 {
+            return 0.0;
+        }
+        (1.0 - (self.compacted_tokens as f64 / self.original_tokens as f64)) * 100.0
+    }
+}
+
 /// 会话压缩器
 pub struct SessionCompactor {
     token_counter: Arc<dyn TokenCounter>,
@@ -70,8 +80,8 @@ impl SessionCompactor {
 
         let llm_messages: Vec<Message> = messages
             .iter()
-            .filter_map(|m| match m {
-                AgentMessage::Llm(msg) => Some(msg.clone()),
+            .map(|m| match m {
+                AgentMessage::Llm(msg) => msg.clone(),
             })
             .collect();
 
@@ -85,8 +95,8 @@ impl SessionCompactor {
     pub fn estimate_usage(&self, messages: &[AgentMessage]) -> (usize, f64) {
         let llm_messages: Vec<Message> = messages
             .iter()
-            .filter_map(|m| match m {
-                AgentMessage::Llm(msg) => Some(msg.clone()),
+            .map(|m| match m {
+                AgentMessage::Llm(msg) => msg.clone(),
             })
             .collect();
 
@@ -122,8 +132,8 @@ impl SessionCompactor {
         // 3. 计算原始 token 数
         let llm_messages: Vec<Message> = messages_to_compact
             .iter()
-            .filter_map(|m| match m {
-                AgentMessage::Llm(msg) => Some(msg.clone()),
+            .map(|m| match m {
+                AgentMessage::Llm(msg) => msg.clone(),
             })
             .collect();
         let original_tokens = self.token_counter.count_messages(&llm_messages);
@@ -184,31 +194,113 @@ impl SessionCompactor {
     }
 
     /// 确定可压缩的消息范围
-    /// 策略：保留第一条消息（通常是系统消息）和最近 N 轮对话
+    /// 策略：基于 token 预算动态确定保留数量，保留第一条消息（通常是系统消息）
     fn determine_compress_range(&self, messages: &[AgentMessage]) -> (usize, usize) {
-        if messages.len() < 5 {
-            return (0, 0); // 消息太少，不压缩
+        if messages.len() < 4 {
+            return (0, 0); // 太少，不压缩
         }
 
-        // 保留第一条消息
-        let keep_first = 1;
+        // 目标: 压缩后保留的 token 数约为 context_window 的 50%
+        let target_retained_tokens = (self.context_window_size as f64 * 0.5) as usize;
 
-        // 计算要保留的最近消息数（每轮对话通常包含 user + assistant + 可能的 tool results）
-        // 这里我们简单保留最近 preserve_recent_turns * 2 条消息
-        let keep_last = self.preserve_recent_turns * 2;
+        // 从最新消息向前累计 token，确定保留起始位置
+        let mut retained_tokens = 0;
+        let mut retain_start = messages.len();
 
-        if messages.len() <= keep_first + keep_last {
-            return (0, 0); // 消息不够多，不压缩
+        for i in (1..messages.len()).rev() { // 跳过 index 0（通常是系统消息）
+            if let Some(msg) = self.get_llm_message(&messages[i]) {
+                let msg_tokens = self.token_counter.count_message(msg);
+
+                if retained_tokens + msg_tokens > target_retained_tokens {
+                    break;
+                }
+
+                retained_tokens += msg_tokens;
+                retain_start = i;
+            }
         }
 
-        let compress_start = keep_first;
-        let compress_end = messages.len() - keep_last;
+        // 确保至少保留最近 2 轮（4 条消息）
+        let min_retain = messages.len().saturating_sub(4);
+        if retain_start > min_retain {
+            retain_start = min_retain;
+        }
 
-        if compress_start >= compress_end {
+        // 确保至少保留 index 0（系统消息）
+        // 压缩范围: [1, retain_start)
+        let compress_start = 1; // 跳过第一条消息（系统提示）
+        let compress_end = retain_start;
+
+        if compress_end <= compress_start + 1 {
+            return (0, 0); // 没有足够的消息可压缩
+        }
+
+        // 对齐到完整的 turn 边界，避免切割 ToolCall 和 ToolResult 对
+        let compress_end = self.align_to_turn_boundary(messages, compress_end);
+
+        if compress_end <= compress_start + 1 {
             return (0, 0);
         }
 
         (compress_start, compress_end)
+    }
+
+    /// 确保压缩边界不会切割 ToolCall 和 ToolResult 对
+    /// 返回调整后的 end 索引，确保不会在 ToolCall 和 ToolResult 之间切割
+    fn align_to_turn_boundary(&self, messages: &[AgentMessage], end: usize) -> usize {
+        // 边界检查
+        if end == 0 || end > messages.len() {
+            return end;
+        }
+
+        let mut aligned_end = end;
+
+        // 情况1: end 指向 ToolResult，需要向前移动，跳过整个 ToolCall + ToolResult 对
+        // 这样压缩范围就不会包含不完整的工具调用对
+        if self.is_tool_result(&messages[aligned_end - 1]) {
+            // 向前跳过所有连续的 ToolResult
+            while aligned_end > 1 && self.is_tool_result(&messages[aligned_end - 1]) {
+                aligned_end -= 1;
+            }
+            // 现在 aligned_end 指向第一个 ToolResult 之前的位置
+            // 需要再向前跳过包含 ToolCall 的 assistant 消息
+            if aligned_end > 1 && self.has_tool_calls(&messages[aligned_end - 1]) {
+                aligned_end -= 1;
+            }
+            return aligned_end;
+        }
+
+        // 情况2: end 指向包含 ToolCall 的 assistant 消息之后的位置
+        // 需要向后移动，包含所有对应的 ToolResult
+        if aligned_end > 0 && self.has_tool_calls(&messages[aligned_end - 1]) {
+            // 向后包含所有连续的 ToolResult
+            while aligned_end < messages.len() && self.is_tool_result(&messages[aligned_end]) {
+                aligned_end += 1;
+            }
+        }
+
+        aligned_end
+    }
+
+    /// 检查消息是否是 ToolResult 类型
+    fn is_tool_result(&self, message: &AgentMessage) -> bool {
+        matches!(message, AgentMessage::Llm(Message::ToolResult(_)))
+    }
+
+    /// 检查消息是否包含 ToolCall
+    fn has_tool_calls(&self, message: &AgentMessage) -> bool {
+        if let AgentMessage::Llm(Message::Assistant(assistant)) = message {
+            assistant.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(_)))
+        } else {
+            false
+        }
+    }
+
+    /// 获取 AgentMessage 内部的 LLM Message 引用
+    fn get_llm_message<'a>(&self, message: &'a AgentMessage) -> Option<&'a Message> {
+        match message {
+            AgentMessage::Llm(msg) => Some(msg),
+        }
     }
 
     /// 调用 LLM 生成摘要
@@ -281,6 +373,7 @@ impl SessionCompactor {
 mod tests {
     use super::*;
     use pi_ai::EstimateTokenCounter;
+    use pi_ai::types::{AssistantMessage, ToolCall, ToolResultMessage, TextContent, Api, Provider};
 
     fn create_test_messages(count: usize) -> Vec<AgentMessage> {
         let mut messages = Vec::new();
@@ -313,19 +406,22 @@ mod tests {
 
     #[test]
     fn test_determine_compress_range() {
+        // 使用非常小的 context window 确保触发压缩逻辑
         let counter = Arc::new(EstimateTokenCounter::new());
-        let compactor = SessionCompactor::new(counter, 10000);
+        let compactor = SessionCompactor::new(counter, 100); // 100 tokens window
 
-        // 消息太少，不压缩
-        let messages = create_test_messages(5);
+        // 消息太少（少于 4 条），不压缩
+        let messages = create_test_messages(3);
         let range = compactor.determine_compress_range(&messages);
         assert_eq!(range, (0, 0));
 
-        // 足够消息，可以压缩
+        // 足够消息，可以压缩 - 小窗口会触发压缩
         let messages = create_test_messages(20);
         let range = compactor.determine_compress_range(&messages);
-        // 保留第1条，保留最后 4*2=8 条，所以压缩范围是 1..12
-        assert_eq!(range, (1, 12));
+        // 验证基本约束
+        assert!(range.0 >= 1, "Should skip first message");
+        assert!(range.1 <= messages.len() - 4, "Should preserve at least last 4 messages");
+        assert!(range.1 > range.0 + 1, "Should have messages to compress");
     }
 
     #[test]
@@ -402,27 +498,25 @@ mod tests {
 
     #[test]
     fn test_compaction_range_calculation() {
+        // 使用非常小的 context window 测试动态保留
         let counter = Arc::new(EstimateTokenCounter::new());
-        let compactor = SessionCompactor::with_config(
-            counter,
-            10000,
-            0.85,
-            3, // 保留最近 3 轮
-        );
+        let compactor = SessionCompactor::new(counter, 100); // 很小的窗口
 
-        // 创建 15 条消息
-        let messages = create_test_messages(15);
+        // 创建足够长的消息
+        let messages = create_test_messages(20);
         let range = compactor.determine_compress_range(&messages);
 
-        // 保留第1条，保留最后 3*2=6 条
-        // 所以压缩范围应该是 1..9
-        assert_eq!(range, (1, 9));
+        // 应该压缩，且保留第一条消息
+        assert!(range.0 >= 1);
+        // 动态算法确保至少保留最后 4 条
+        assert!(range.1 <= messages.len() - 4 || range.1 == messages.len());
     }
 
     #[test]
     fn test_compaction_preserves_recent_messages() {
+        // 使用小窗口确保触发压缩
         let counter = Arc::new(EstimateTokenCounter::new());
-        let compactor = SessionCompactor::new(counter, 10000);
+        let compactor = SessionCompactor::new(counter, 100);
 
         // 创建 20 条消息
         let messages = create_test_messages(20);
@@ -431,9 +525,8 @@ mod tests {
         // 验证保留第一条消息
         assert!(range.0 >= 1);
 
-        // 验证保留最近的消息 (最后 8 条)
-        let preserved_end = messages.len() - range.1;
-        assert_eq!(preserved_end, 8);
+        // 验证保留最近的消息（动态算法保证至少保留最后 4 条）
+        assert!(range.1 <= messages.len() - 4 || range.1 == messages.len());
 
         // 应用压缩并验证最近消息被保留
         let mut messages_clone = messages.clone();
@@ -467,7 +560,7 @@ mod tests {
             _ => panic!("Expected user message"),
         }
 
-        // 验证最近的消息还在（最后 8 条应该保留）
+        // 验证最近的消息还在
         let last_idx = messages_clone.len() - 1;
         match &messages_clone[last_idx] {
             AgentMessage::Llm(Message::User(user_msg)) => {
@@ -515,5 +608,128 @@ mod tests {
             4,
         );
         assert_eq!(compactor.compact_threshold(), 0.0);
+    }
+
+    #[test]
+    fn test_savings_percentage() {
+        let summary_message = AgentMessage::user("Summary");
+        let record = CompactionRecord {
+            compacted_at: 0,
+            removed_message_range: (1, 5),
+            summary_tokens: 100,
+            original_tokens: 1000,
+        };
+        let result = CompactionResult {
+            summary_message,
+            removed_count: 4,
+            original_tokens: 1000,
+            compacted_tokens: 100,
+            record,
+        };
+
+        // 100/1000 = 10%, savings = 90%
+        assert!((result.savings_percentage() - 90.0).abs() < 0.01);
+
+        // 测试零 token 情况
+        let summary_message = AgentMessage::user("Summary");
+        let record = CompactionRecord {
+            compacted_at: 0,
+            removed_message_range: (1, 5),
+            summary_tokens: 0,
+            original_tokens: 0,
+        };
+        let result = CompactionResult {
+            summary_message,
+            removed_count: 4,
+            original_tokens: 0,
+            compacted_tokens: 0,
+            record,
+        };
+        assert_eq!(result.savings_percentage(), 0.0);
+    }
+
+    #[test]
+    fn test_align_to_turn_boundary() {
+        let counter = Arc::new(EstimateTokenCounter::new());
+        let compactor = SessionCompactor::new(counter, 10000);
+
+        // 创建包含 ToolCall 和 ToolResult 的消息序列
+        let mut messages = Vec::new();
+        
+        // 用户消息
+        messages.push(AgentMessage::user("Hello"));
+        // 包含 ToolCall 的助手消息
+        let mut assistant_msg = AssistantMessage::new(Api::Anthropic, Provider::Anthropic, "claude-3");
+        assistant_msg.content.push(ContentBlock::ToolCall(ToolCall::new(
+            "call_1",
+            "read",
+            serde_json::json!({"file_path": "/test.rs"})
+        )));
+        messages.push(AgentMessage::Llm(Message::Assistant(assistant_msg)));
+        
+        // ToolResult 消息
+        messages.push(AgentMessage::Llm(Message::ToolResult(ToolResultMessage::new(
+            "call_1",
+            "read",
+            vec![ContentBlock::Text(TextContent::new("file content"))]
+        ))));
+        
+        // 更多用户消息
+        messages.push(AgentMessage::user("Continue"));
+        messages.push(AgentMessage::user("Done"));
+
+        // 测试边界对齐在 ToolResult 处
+        // 如果 end 指向 ToolResult（index 2），应该向前移动到 ToolCall 之前（index 1）
+        let aligned = compactor.align_to_turn_boundary(&messages, 3); // end=3 表示包含 index 0,1,2
+        // 应该跳过整个 ToolCall + ToolResult 对，返回到 index 1 之前
+        assert_eq!(aligned, 1); // 应该返回到 index 1（ToolCall 消息）之前
+
+        // 测试边界对齐在 ToolCall 后
+        // 如果 end 指向 assistant with ToolCall 之后（index 2），应该包含对应的 ToolResult
+        let aligned = compactor.align_to_turn_boundary(&messages, 2); // end=2 表示包含 index 0,1
+        // 应该包含对应的 ToolResult（index 2）
+        assert_eq!(aligned, 3); // 应该包含到 ToolResult 结束
+    }
+
+    #[test]
+    fn test_is_tool_result() {
+        let counter = Arc::new(EstimateTokenCounter::new());
+        let compactor = SessionCompactor::new(counter, 10000);
+
+        // 用户消息不是 ToolResult
+        let user_msg = AgentMessage::user("Hello");
+        assert!(!compactor.is_tool_result(&user_msg));
+
+        // ToolResult 消息
+        let tool_result = AgentMessage::Llm(Message::ToolResult(ToolResultMessage::new(
+            "call_1",
+            "read",
+            vec![ContentBlock::Text(TextContent::new("result"))]
+        )));
+        assert!(compactor.is_tool_result(&tool_result));
+    }
+
+    #[test]
+    fn test_has_tool_calls() {
+        let counter = Arc::new(EstimateTokenCounter::new());
+        let compactor = SessionCompactor::new(counter, 10000);
+
+        // 用户消息没有 ToolCall
+        let user_msg = AgentMessage::user("Hello");
+        assert!(!compactor.has_tool_calls(&user_msg));
+
+        // 不包含 ToolCall 的助手消息
+        let mut assistant_no_tools = AssistantMessage::new(Api::Anthropic, Provider::Anthropic, "claude-3");
+        assistant_no_tools.content.push(ContentBlock::Text(TextContent::new("Hello")));
+        assert!(!compactor.has_tool_calls(&AgentMessage::Llm(Message::Assistant(assistant_no_tools))));
+
+        // 包含 ToolCall 的助手消息
+        let mut assistant_with_tools = AssistantMessage::new(Api::Anthropic, Provider::Anthropic, "claude-3");
+        assistant_with_tools.content.push(ContentBlock::ToolCall(ToolCall::new(
+            "call_1",
+            "read",
+            serde_json::json!({})
+        )));
+        assert!(compactor.has_tool_calls(&AgentMessage::Llm(Message::Assistant(assistant_with_tools))));
     }
 }

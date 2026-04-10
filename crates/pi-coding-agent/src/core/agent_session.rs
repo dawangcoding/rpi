@@ -131,8 +131,10 @@ impl AgentSession {
         
         // 设置事件监听器用于统计
         let stats_clone = stats.clone();
+        let model_cost = config.model.cost.clone();
         agent.subscribe(Arc::new(move |event: AgentEvent, _cancel: CancellationToken| {
             let stats = stats_clone.clone();
+            let model_cost = model_cost.clone();
             tokio::spawn(async move {
                 let mut s = stats.write().await;
                 match &event {
@@ -150,6 +152,16 @@ impl AgentSession {
                                     s.tokens.cache_write += cw;
                                 }
                                 s.tokens.total = s.tokens.input + s.tokens.output;
+                                
+                                // 计算本次消息成本
+                                let cost = &model_cost;
+                                let input_cost = (msg.usage.input_tokens as f64) * cost.input / 1_000_000.0;
+                                let output_cost = (msg.usage.output_tokens as f64) * cost.output / 1_000_000.0;
+                                let cache_read_cost = msg.usage.cache_read_tokens
+                                    .unwrap_or(0) as f64 * cost.cache_read.unwrap_or(0.0) / 1_000_000.0;
+                                let cache_write_cost = msg.usage.cache_write_tokens
+                                    .unwrap_or(0) as f64 * cost.cache_write.unwrap_or(0.0) / 1_000_000.0;
+                                s.cost += input_cost + output_cost + cache_read_cost + cache_write_cost;
                             },
                             AgentMessage::Llm(Message::ToolResult(_)) => s.tool_results += 1,
                         }
@@ -238,6 +250,11 @@ impl AgentSession {
     pub async fn stats(&self) -> SessionStats {
         self.stats.read().await.clone()
     }
+
+    /// 获取估算成本（美元）
+    pub async fn estimated_cost(&self) -> f64 {
+        self.stats.read().await.cost
+    }
     
     /// 中止
     pub async fn abort(&self) { 
@@ -266,6 +283,11 @@ impl AgentSession {
     /// 获取会话 ID (异步版本)
     pub async fn session_id_async(&self) -> String {
         self.stats.read().await.session_id.clone()
+    }
+
+    /// 设置会话 ID
+    pub async fn set_session_id(&self, id: String) {
+        self.stats.write().await.session_id = id;
     }
     
     /// 获取会话目录
@@ -412,6 +434,11 @@ impl AgentSession {
         &self.extension_manager
     }
 
+    /// 获取会话管理器
+    pub fn session_manager(&self) -> Option<&SessionManager> {
+        self.session_manager.as_ref()
+    }
+
     /// 关闭会话，清理资源
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
         // 停用所有扩展
@@ -424,10 +451,12 @@ impl AgentSession {
         if let Some(mgr) = &self.session_manager {
             let state = self.agent.state().await;
             let history = self.compaction_history.read().await.clone();
+            let stats = self.stats.read().await.clone();
             mgr.save_session_with_compaction(
-                &self.stats.read().await.session_id,
+                &stats.session_id,
                 &state.messages,
                 &history,
+                Some(&stats),
             ).await?;
         }
         Ok(())
@@ -561,5 +590,127 @@ impl AgentSessionBuilder {
         };
         
         AgentSession::new(config).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pi_ai::types::ModelCost;
+
+    #[test]
+    fn test_cost_calculation_formula() {
+        // 测试成本计算公式
+        // Claude Sonnet 4 定价: input=3.0, output=15.0 per million
+        let cost = ModelCost {
+            input: 3.0,
+            output: 15.0,
+            cache_read: Some(0.3),
+            cache_write: Some(3.75),
+        };
+        
+        // 1000 input tokens + 500 output tokens
+        let input_tokens = 1000u64;
+        let output_tokens = 500u64;
+        
+        let input_cost = (input_tokens as f64) * cost.input / 1_000_000.0;  // $0.003
+        let output_cost = (output_tokens as f64) * cost.output / 1_000_000.0;  // $0.0075
+        let expected = input_cost + output_cost;  // $0.0105
+        
+        assert!((input_cost - 0.003).abs() < 0.0001);
+        assert!((output_cost - 0.0075).abs() < 0.0001);
+        assert!((expected - 0.0105).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_cost_with_cache_tokens() {
+        // 测试包含缓存 token 的成本计算
+        let cost = ModelCost {
+            input: 3.0,
+            output: 15.0,
+            cache_read: Some(0.3),
+            cache_write: Some(3.75),
+        };
+        
+        // 模拟使用缓存的请求
+        let input_tokens = 1000u64;
+        let output_tokens = 500u64;
+        let cache_read_tokens = 8000u64;  // 从缓存读取
+        let cache_write_tokens = 2000u64; // 写入缓存
+        
+        let input_cost = (input_tokens as f64) * cost.input / 1_000_000.0;
+        let output_cost = (output_tokens as f64) * cost.output / 1_000_000.0;
+        let cache_read_cost = (cache_read_tokens as f64) * cost.cache_read.unwrap_or(0.0) / 1_000_000.0;
+        let cache_write_cost = (cache_write_tokens as f64) * cost.cache_write.unwrap_or(0.0) / 1_000_000.0;
+        
+        let total_cost = input_cost + output_cost + cache_read_cost + cache_write_cost;
+        
+        // 验证各项成本
+        assert!((input_cost - 0.003).abs() < 0.0001);
+        assert!((output_cost - 0.0075).abs() < 0.0001);
+        assert!((cache_read_cost - 0.0024).abs() < 0.0001);  // 8000 * 0.3 / 1M
+        assert!((cache_write_cost - 0.0075).abs() < 0.0001); // 2000 * 3.75 / 1M
+        assert!((total_cost - 0.0204).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_cost_accumulation() {
+        // 测试多次消息的成本累加
+        let cost = ModelCost {
+            input: 3.0,
+            output: 15.0,
+            cache_read: Some(0.3),
+            cache_write: Some(3.75),
+        };
+        
+        // 第一条消息
+        let msg1_input = 1000u64;
+        let msg1_output = 500u64;
+        let cost1 = (msg1_input as f64) * cost.input / 1_000_000.0 
+                  + (msg1_output as f64) * cost.output / 1_000_000.0;
+        
+        // 第二条消息
+        let msg2_input = 2000u64;
+        let msg2_output = 1000u64;
+        let cost2 = (msg2_input as f64) * cost.input / 1_000_000.0 
+                  + (msg2_output as f64) * cost.output / 1_000_000.0;
+        
+        // 累加
+        let total = cost1 + cost2;
+        
+        assert!((cost1 - 0.0105).abs() < 0.0001);
+        assert!((cost2 - 0.021).abs() < 0.0001);
+        assert!((total - 0.0315).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_cost_zero_for_no_cache_pricing() {
+        // 测试没有缓存定价时的成本为 0
+        let cost = ModelCost {
+            input: 3.0,
+            output: 15.0,
+            cache_read: None,
+            cache_write: None,
+        };
+        
+        let cache_read_tokens = Some(8000u64);
+        let cache_write_tokens = Some(2000u64);
+        
+        let cache_read_cost = cache_read_tokens.unwrap_or(0) as f64 * cost.cache_read.unwrap_or(0.0) / 1_000_000.0;
+        let cache_write_cost = cache_write_tokens.unwrap_or(0) as f64 * cost.cache_write.unwrap_or(0.0) / 1_000_000.0;
+        
+        assert!((cache_read_cost - 0.0).abs() < 0.0001);
+        assert!((cache_write_cost - 0.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_session_stats_default() {
+        // 测试 SessionStats 默认值
+        let stats = SessionStats::default();
+        assert_eq!(stats.cost, 0.0);
+        assert_eq!(stats.tokens.input, 0);
+        assert_eq!(stats.tokens.output, 0);
+        assert_eq!(stats.user_messages, 0);
+        assert_eq!(stats.assistant_messages, 0);
     }
 }
