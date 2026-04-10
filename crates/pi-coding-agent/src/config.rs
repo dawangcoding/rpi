@@ -134,6 +134,25 @@ impl AppConfig {
         Self::get_api_key_from_env(provider)
     }
 
+    /// 异步获取 API Key，支持自动 token 刷新
+    /// 
+    /// 与 get_api_key 的区别：此方法会在 token 即将过期时自动尝试刷新
+    pub async fn get_api_key_async(&self, provider: &str) -> Option<String> {
+        // 1. 先检查 OAuth token 存储（带自动刷新）
+        let token_storage = crate::core::auth::TokenStorage::new();
+        if let Some(token) = token_storage.get_valid_token_or_refresh(provider).await {
+            return Some(token);
+        }
+
+        // 2. 检查配置
+        if let Some(key) = self.api_keys.get(provider) {
+            return Some(key.clone());
+        }
+
+        // 3. 检查环境变量
+        Self::get_api_key_from_env(provider)
+    }
+
     /// 从环境变量获取 API Key
     fn get_api_key_from_env(provider: &str) -> Option<String> {
         match provider {

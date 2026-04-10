@@ -39,6 +39,10 @@ reqwest.workspace = true
 bytes.workspace = true
 pulldown-cmark = "0.9"
 sha2.workspace = true
+keyring = "3"
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
 
 [dev-dependencies]
 tempfile.workspace = true

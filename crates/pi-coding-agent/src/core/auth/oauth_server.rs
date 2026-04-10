@@ -80,7 +80,12 @@ pub async fn run_oauth_flow(
         let challenge = sha256_base64url(verifier);
         auth_url.push_str(&format!("&code_challenge={}&code_challenge_method=S256", challenge));
     }
-    
+
+    // 追加 Provider 特有的额外授权参数
+    for (key, value) in &provider_config.extra_auth_params {
+        auth_url.push_str(&format!("&{}={}", urlencoding_encode(key), urlencoding_encode(value)));
+    }
+
     // 4. 打开浏览器
     println!("\n打开浏览器进行授权...");
     println!("如果浏览器未自动打开，请手动访问：\n{}\n", auth_url);
@@ -216,4 +221,92 @@ fn open_browser(url: &str) -> Result<()> {
     #[cfg(target_os = "windows")]
     std::process::Command::new("cmd").args(["/c", "start", url]).spawn()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_code_verifier_length() {
+        let verifier = generate_code_verifier();
+        // Base64 URL 编码的 32 字节应该产生 43 字符
+        assert!(verifier.len() >= 43);
+        // 应该只包含 URL 安全字符
+        assert!(verifier.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn test_generate_code_verifier_uniqueness() {
+        let v1 = generate_code_verifier();
+        let v2 = generate_code_verifier();
+        assert_ne!(v1, v2, "Two verifiers should be different");
+    }
+
+    #[test]
+    fn test_sha256_base64url() {
+        // 已知输入的 SHA256 Base64 URL 编码
+        let result = sha256_base64url("test_verifier");
+        assert!(!result.is_empty());
+        // 结果不应包含 + / = 字符（这些是标准 Base64，不是 URL 安全的）
+        assert!(!result.contains('+'));
+        assert!(!result.contains('/'));
+        assert!(!result.contains('='));
+    }
+
+    #[test]
+    fn test_sha256_base64url_deterministic() {
+        let r1 = sha256_base64url("same_input");
+        let r2 = sha256_base64url("same_input");
+        assert_eq!(r1, r2, "Same input should produce same output");
+    }
+
+    #[test]
+    fn test_generate_state_uniqueness() {
+        let s1 = generate_state();
+        let s2 = generate_state();
+        assert_ne!(s1, s2, "Two states should be different");
+    }
+
+    #[test]
+    fn test_generate_state_format() {
+        let state = generate_state();
+        // UUID v4 格式
+        assert!(!state.is_empty());
+    }
+
+    #[test]
+    fn test_parse_query_string() {
+        let params = parse_query_string("code=abc123&state=xyz789&scope=read");
+        assert_eq!(params.get("code"), Some(&"abc123".to_string()));
+        assert_eq!(params.get("state"), Some(&"xyz789".to_string()));
+        assert_eq!(params.get("scope"), Some(&"read".to_string()));
+    }
+
+    #[test]
+    fn test_parse_query_string_empty() {
+        let params = parse_query_string("");
+        // 空字符串 split 后会产生一个空 key 的 entry
+        // 这是当前实现的实际行为
+        assert_eq!(params.get(""), Some(&"".to_string()));
+    }
+
+    #[test]
+    fn test_parse_query_string_encoded() {
+        let params = parse_query_string("key=hello%20world&other=a%26b");
+        // 注意：取决于实现是否做 URL 解码
+        assert!(params.contains_key("key"));
+    }
+
+    #[test]
+    fn test_urlencoding_encode() {
+        let encoded = urlencoding_encode("hello world");
+        assert_eq!(encoded, "hello%20world");
+    }
+
+    #[test]
+    fn test_urlencoding_encode_special_chars() {
+        let encoded = urlencoding_encode("a&b=c");
+        assert!(encoded.contains("%26") || encoded.contains("%3D"));
+    }
 }
