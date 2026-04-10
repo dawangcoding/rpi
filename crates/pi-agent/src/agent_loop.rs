@@ -497,13 +497,20 @@ async fn execute_tools_sequential(
     };
 
     for tool_call in tool_calls {
+        // 发出 BeforeToolCall 事件（工具调用前，可拦截）
+        emit(AgentEvent::BeforeToolCall {
+            tool_call_id: tool_call.id.clone(),
+            tool_name: tool_call.name.clone(),
+            args: tool_call.arguments.clone(),
+        });
+
         emit(AgentEvent::ToolExecutionStart {
             tool_call_id: tool_call.id.clone(),
             tool_name: tool_call.name.clone(),
             args: tool_call.arguments.clone(),
         });
 
-        let (result_msg, _is_error) = execute_tool_call(
+        let (result_msg, is_error) = execute_tool_call(
             context,
             &assistant,
             &tool_call,
@@ -512,6 +519,17 @@ async fn execute_tools_sequential(
             cancel.clone(),
         )
         .await?;
+
+        // 发出 AfterToolCall 事件（工具调用后，可修改结果）
+        emit(AgentEvent::AfterToolCall {
+            tool_call_id: tool_call.id.clone(),
+            tool_name: tool_call.name.clone(),
+            result: AgentToolResult {
+                content: result_msg.content.clone(),
+                details: result_msg.details.clone().unwrap_or_default(),
+            },
+            is_error,
+        });
 
         results.push(result_msg);
     }
@@ -537,6 +555,13 @@ async fn execute_tools_parallel(
     };
 
     for tool_call in tool_calls {
+        // 发出 BeforeToolCall 事件（工具调用前，可拦截）
+        emit(AgentEvent::BeforeToolCall {
+            tool_call_id: tool_call.id.clone(),
+            tool_name: tool_call.name.clone(),
+            args: tool_call.arguments.clone(),
+        });
+
         emit(AgentEvent::ToolExecutionStart {
             tool_call_id: tool_call.id.clone(),
             tool_name: tool_call.name.clone(),
@@ -558,6 +583,14 @@ async fn execute_tools_parallel(
             .with_details(error_result.details.clone());
 
             emit(AgentEvent::ToolExecutionEnd {
+                tool_call_id: tool_call.id.clone(),
+                tool_name: tool_call.name.clone(),
+                result: error_result.clone(),
+                is_error: true,
+            });
+
+            // 发出 AfterToolCall 事件
+            emit(AgentEvent::AfterToolCall {
                 tool_call_id: tool_call.id.clone(),
                 tool_name: tool_call.name.clone(),
                 result: error_result,
@@ -632,6 +665,14 @@ async fn execute_tools_parallel(
                     is_error: final_is_error,
                 });
 
+                // 发出 AfterToolCall 事件
+                emit(AgentEvent::AfterToolCall {
+                    tool_call_id: tool_call.id.clone(),
+                    tool_name: tool_call.name.clone(),
+                    result: final_result.clone(),
+                    is_error: final_is_error,
+                });
+
                 let msg = ToolResultMessage::new(&tool_call.id, &tool_call.name, final_result.content)
                     .with_error(final_is_error)
                     .with_details(final_result.details);
@@ -642,6 +683,14 @@ async fn execute_tools_parallel(
                 let error_result = AgentToolResult::error(e.to_string());
 
                 emit(AgentEvent::ToolExecutionEnd {
+                    tool_call_id: tool_call.id.clone(),
+                    tool_name: tool_call.name.clone(),
+                    result: error_result.clone(),
+                    is_error: true,
+                });
+
+                // 发出 AfterToolCall 事件
+                emit(AgentEvent::AfterToolCall {
                     tool_call_id: tool_call.id.clone(),
                     tool_name: tool_call.name.clone(),
                     result: error_result.clone(),

@@ -78,6 +78,17 @@ impl CodingAgentAutocompleteProvider {
             model_provider: ModelAutocompleteProvider::new(),
         }
     }
+
+    /// 添加扩展注册的命令到自动补全列表
+    fn add_extension_commands(&mut self, commands: &[crate::core::extensions::SlashCommand]) {
+        for cmd in commands {
+            let mut slash_cmd = SlashCommand::new(&cmd.name, &cmd.description);
+            if !cmd.aliases.is_empty() {
+                slash_cmd = slash_cmd.with_aliases(cmd.aliases.clone());
+            }
+            self.slash_provider.add_command(slash_cmd);
+        }
+    }
 }
 
 impl AutocompleteProvider for CodingAgentAutocompleteProvider {
@@ -163,7 +174,10 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
     editor.set_focused(true);
     
     // 设置自动完成提供者
-    let autocomplete_provider = CodingAgentAutocompleteProvider::new(config.cwd.clone());
+    let mut autocomplete_provider = CodingAgentAutocompleteProvider::new(config.cwd.clone());
+    // 添加扩展命令到自动补全列表
+    let ext_commands = session.extension_manager().get_all_commands();
+    autocomplete_provider.add_extension_commands(&ext_commands);
     editor.set_autocomplete_provider(Box::new(autocomplete_provider));
     
     // StreamingBlock 仍保留用于差分渲染当前流式消息
@@ -686,18 +700,85 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                         }
                         let (term_width, _) = terminal.size();
                         render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
-                    } else if prompt == "/extensions" {
-                        // 显示已加载的扩展列表
-                        let ext_mgr = session.extension_manager();
-                        let extensions = ext_mgr.list_extensions();
-                                            
-                        if extensions.is_empty() {
-                            message_history.add_system_message("No extensions loaded.".to_string());
-                        } else {
-                            message_history.add_system_message(format!("Loaded Extensions ({}):", extensions.len()));
-                            for ext in extensions {
-                                message_history.add_system_message(format!("  {} v{} - {}", 
-                                    ext.name, ext.version, ext.description));
+                    } else if prompt == "/extensions" || prompt.starts_with("/extensions ") {
+                        // 解析子命令
+                        let sub_cmd = if prompt.len() > 12 { prompt[12..].trim() } else { "list" };
+                        let sub_cmd_name = sub_cmd.split_whitespace().next().unwrap_or("list");
+                        
+                        match sub_cmd_name {
+                            "list" | "" => {
+                                // 列出扩展（名称、版本、描述、工具数）
+                                let ext_mgr = session.extension_manager();
+                                let extensions = ext_mgr.list_extensions();
+                                
+                                if extensions.is_empty() {
+                                    message_history.add_system_message("No extensions loaded.".to_string());
+                                } else {
+                                    message_history.add_system_message(format!("Loaded Extensions ({}):", extensions.len()));
+                                    for ext in &extensions {
+                                        let tool_count = ext_mgr.get_extension_tools(&ext.name).len();
+                                        message_history.add_system_message(format!(
+                                            "  {} v{} - {} (tools: {})",
+                                            ext.name, ext.version, ext.description, tool_count
+                                        ));
+                                    }
+                                }
+                            }
+                            "info" => {
+                                // 显示扩展详情
+                                let ext_name = sub_cmd.splitn(2, ' ').nth(1).unwrap_or("").trim();
+                                if ext_name.is_empty() {
+                                    message_history.add_system_message("Usage: /extensions info <name>".to_string());
+                                } else {
+                                    let ext_mgr = session.extension_manager();
+                                    let extensions = ext_mgr.list_extensions();
+                                    if let Some(ext) = extensions.iter().find(|e| e.name == ext_name) {
+                                        message_history.add_system_message(format!("Extension: {}", ext.name));
+                                        message_history.add_system_message(format!("  Version: {}", ext.version));
+                                        message_history.add_system_message(format!("  Description: {}", ext.description));
+                                        message_history.add_system_message(format!("  Author: {}", ext.author));
+                                        let tools = ext_mgr.get_extension_tools(&ext.name);
+                                        message_history.add_system_message(format!("  Registered tools: {}", tools.len()));
+                                        // 显示工具列表
+                                        for tool in &tools {
+                                            message_history.add_system_message(format!("    - {} : {}", tool.name(), tool.description()));
+                                        }
+                                    } else {
+                                        message_history.add_system_message(format!("Extension '{}' not found", ext_name));
+                                    }
+                                }
+                            }
+                            "enable" => {
+                                // 启用扩展（下次重启生效）
+                                let ext_name = sub_cmd.splitn(2, ' ').nth(1).unwrap_or("").trim();
+                                if ext_name.is_empty() {
+                                    message_history.add_system_message("Usage: /extensions enable <name>".to_string());
+                                } else {
+                                    // TODO: 修改配置文件
+                                    message_history.add_system_message(format!(
+                                        "Extension '{}' will be enabled on next restart. (TODO: config persistence)",
+                                        ext_name
+                                    ));
+                                }
+                            }
+                            "disable" => {
+                                // 禁用扩展（下次重启生效）
+                                let ext_name = sub_cmd.splitn(2, ' ').nth(1).unwrap_or("").trim();
+                                if ext_name.is_empty() {
+                                    message_history.add_system_message("Usage: /extensions disable <name>".to_string());
+                                } else {
+                                    // TODO: 修改配置文件
+                                    message_history.add_system_message(format!(
+                                        "Extension '{}' will be disabled on next restart. (TODO: config persistence)",
+                                        ext_name
+                                    ));
+                                }
+                            }
+                            other => {
+                                message_history.add_system_message(format!(
+                                    "Unknown subcommand: {}. Available: list, info, enable, disable",
+                                    other
+                                ));
                             }
                         }
                         let (term_width, _) = terminal.size();
@@ -948,7 +1029,10 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                         message_history.add_system_message("  /compact       - Compact conversation history to save context space".to_string());
                         message_history.add_system_message("  /export        - Export session to HTML".to_string());
                         message_history.add_system_message("  /export path.html - Export to specific path".to_string());
-                        message_history.add_system_message("  /extensions    - List loaded extensions".to_string());
+                        message_history.add_system_message("  /extensions         - List loaded extensions".to_string());
+                        message_history.add_system_message("  /extensions info <name> - Show extension details".to_string());
+                        message_history.add_system_message("  /extensions enable <name> - Enable extension (next restart)".to_string());
+                        message_history.add_system_message("  /extensions disable <name> - Disable extension (next restart)".to_string());
                         message_history.add_system_message("  /login         - Login with OAuth (anthropic, github-copilot)".to_string());
                         message_history.add_system_message("  /logout        - Logout from OAuth provider".to_string());
                         message_history.add_system_message("  /auth          - Show authentication status".to_string());
@@ -957,8 +1041,51 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                         message_history.add_system_message("  /theme light   - Switch to light theme".to_string());
                         message_history.add_system_message("  /exit          - Exit the application".to_string());
                         message_history.add_system_message("  /quit          - Alias for /exit".to_string());
+                        
+                        // 显示扩展注册的命令
+                        let ext_commands = session.extension_manager().get_all_commands();
+                        if !ext_commands.is_empty() {
+                            message_history.add_system_message("".to_string());
+                            message_history.add_system_message("Extension Commands:".to_string());
+                            for cmd in ext_commands {
+                                let usage = cmd.usage.as_deref().unwrap_or(&cmd.name);
+                                message_history.add_system_message(format!("  /{} - {}", usage, cmd.description));
+                            }
+                        }
+                        
                         let (term_width, _) = terminal.size();
                         render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                    } else if prompt.starts_with("/") {
+                        // 尝试从扩展查找命令
+                        let cmd_name = prompt[1..].split_whitespace().next().unwrap_or("");
+                        let cmd_args_str = prompt[1..].trim_start().splitn(2, ' ').nth(1).unwrap_or("").to_string();
+                        
+                        let ext_commands = session.extension_manager().get_all_commands();
+                        let found_cmd = ext_commands.into_iter().find(|c| c.matches(cmd_name));
+                        
+                        if let Some(cmd) = found_cmd {
+                            let args = crate::core::extensions::types::CommandArgs::new(cmd_args_str);
+                            match (cmd.handler)(args).await {
+                                Ok(result) => {
+                                    if !result.message.is_empty() {
+                                        message_history.add_system_message(result.message);
+                                    }
+                                    if result.should_render {
+                                        let (term_width, _) = terminal.size();
+                                        render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                                    }
+                                }
+                                Err(e) => {
+                                    message_history.add_system_message(format!("Command error: {}", e));
+                                    let (term_width, _) = terminal.size();
+                                    render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                                }
+                            }
+                        } else {
+                            message_history.add_system_message(format!("Unknown command: {}", prompt));
+                            let (term_width, _) = terminal.size();
+                            render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                        }
                     } else if !prompt.is_empty() {
                         // 记录用户消息到历史
                         message_history.add_user_message(prompt.clone());

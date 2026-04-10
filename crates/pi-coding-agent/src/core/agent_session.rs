@@ -16,7 +16,8 @@ use super::tools;
 use super::session_manager::{SessionManager, CompactionRecord};
 use super::permissions::{PermissionManager, PermissionCheckResult};
 use super::compaction::{SessionCompactor, CompactionResult};
-use super::extensions::{ExtensionManager, ExtensionLoader, ExtensionContext};
+use super::extensions::{ExtensionManager, ExtensionLoader, ExtensionContext, ExtensionRegistry};
+use super::extensions::builtin::CounterExtensionFactory;
 use crate::config::AppConfig;
 
 /// 会话统计
@@ -75,7 +76,45 @@ impl AgentSession {
         let session_id = config.session_id.clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         
-        // 构建工具列表
+        // ========================================
+        // 1. 初始化扩展注册表并加载扩展（在 Agent 创建之前）
+        // ========================================
+        let mut extension_registry = ExtensionRegistry::new();
+        // 注册内置扩展工厂
+        extension_registry.register_factory(Box::new(CounterExtensionFactory));
+        
+        // 从注册表加载启用的扩展
+        let extension_loader = ExtensionLoader::new();
+        let loaded_extensions = extension_loader.load_extensions(&extension_registry, &config.app_config);
+        
+        // 创建扩展管理器并注册已加载的扩展
+        let mut extension_manager = ExtensionManager::new();
+        for ext in loaded_extensions {
+            extension_manager.register(ext);
+        }
+        
+        // 创建扩展上下文
+        let extension_ctx = ExtensionContext::new(
+            config.cwd.clone(),
+            config.app_config.clone(),
+            session_id.clone(),
+            "global"
+        );
+        
+        // 激活扩展（忽略激活失败，不影响主程序）
+        if let Err(e) = extension_manager.activate_all(&extension_ctx).await {
+            tracing::warn!("Some extensions failed to activate: {}", e);
+        }
+        
+        // 获取扩展注册的工具
+        let extension_tools = extension_manager.get_all_tools();
+        if !extension_tools.is_empty() {
+            tracing::info!("Loaded {} tool(s) from extensions", extension_tools.len());
+        }
+        
+        // ========================================
+        // 2. 构建工具列表（包含扩展工具）
+        // ========================================
         let mut tool_list: Vec<Arc<dyn AgentTool>> = vec![
             Arc::new(tools::ReadTool::new(config.cwd.clone())),
             Arc::new(tools::WriteTool::new(config.cwd.clone())),
@@ -91,7 +130,12 @@ impl AgentSession {
             tool_list.push(Arc::new(tools::EditTool::new(config.cwd.clone())));
         }
         
-        // 构建系统提示词
+        // 合并扩展工具到工具列表
+        tool_list.extend(extension_tools);
+        
+        // ========================================
+        // 3. 构建系统提示词
+        // ========================================
         let context_files = load_all_context_files(&config.context_files, &config.cwd);
         let system_prompt = build_system_prompt(&BuildSystemPromptOptions {
             custom_prompt: config.system_prompt.clone(),
@@ -102,11 +146,13 @@ impl AgentSession {
             cwd: config.cwd.clone(),
         });
         
+        // ========================================
+        // 4. 创建 Agent（此时工具列表已包含扩展工具）
+        // ========================================
         // 获取 API key
         let provider_str = format!("{:?}", config.model.provider).to_lowercase();
         let api_key = config.app_config.get_api_key(&provider_str);
         
-        // 创建 Agent
         let mut agent_options = pi_agent::agent::AgentOptions {
             model: Some(config.model.clone()),
             system_prompt: Some(system_prompt),
@@ -129,7 +175,9 @@ impl AgentSession {
             ..Default::default()
         }));
         
-        // 设置事件监听器用于统计
+        // ========================================
+        // 5. 设置事件监听器用于统计
+        // ========================================
         let stats_clone = stats.clone();
         let model_cost = config.model.cost.clone();
         agent.subscribe(Arc::new(move |event: AgentEvent, _cancel: CancellationToken| {
@@ -175,6 +223,9 @@ impl AgentSession {
             });
         }));
         
+        // ========================================
+        // 6. 初始化其他组件
+        // ========================================
         // 会话管理器
         let session_manager = SessionManager::new(&config.app_config)?;
         
@@ -191,31 +242,10 @@ impl AgentSession {
         let compactor = Arc::new(SessionCompactor::new(token_counter, context_window));
         let compaction_history = Arc::new(RwLock::new(Vec::new()));
 
-        // 初始化扩展管理器
-        let mut extension_manager = ExtensionManager::new();
-        let extension_loader = ExtensionLoader::new();
-        
-        // 扫描扩展（目前只扫描，不加载实际扩展，因为 Trait Object 需要具体实现）
+        // 扫描外部扩展目录（仅记录，不加载）
         let _manifests = extension_loader.scan_extensions();
         if !_manifests.is_empty() {
-            tracing::info!("Found {} extension(s) in {:?}", _manifests.len(), extension_loader.extensions_dir());
-        }
-        
-        // 创建扩展上下文并激活扩展
-        let extension_ctx = ExtensionContext::new(
-            config.cwd.clone(),
-            config.app_config.clone(),
-            session_id.clone(),
-            "global"
-        );
-        extension_manager.activate_all(&extension_ctx).await?;
-        
-        // 获取扩展注册的工具并合并到工具列表
-        let extension_tools = extension_manager.get_all_tools();
-        if !extension_tools.is_empty() {
-            tracing::info!("Loaded {} tool(s) from extensions", extension_tools.len());
-            // 注意：扩展工具在当前架构下需要在 Agent 创建前添加
-            // 这里先记录，后续如果需要支持动态工具注册需要重构
+            tracing::info!("Found {} extension manifest(s) in {:?}", _manifests.len(), extension_loader.extensions_dir());
         }
 
         Ok(Self {

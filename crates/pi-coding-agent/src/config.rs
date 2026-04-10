@@ -42,6 +42,10 @@ pub struct AppConfig {
     /// 工具权限配置
     #[serde(default)]
     pub permissions: Option<ToolPermissionConfig>,
+
+    /// 扩展配置
+    #[serde(default)]
+    pub extensions: Option<ExtensionsConfig>,
 }
 
 /// 自定义模型配置
@@ -54,6 +58,20 @@ pub struct CustomModelConfig {
     pub provider: String,
     #[serde(rename = "baseUrl")]
     pub base_url: String,
+}
+
+/// 扩展配置
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExtensionsConfig {
+    /// 启用的扩展列表（为空表示加载所有可用扩展）
+    #[serde(default)]
+    pub enabled: Vec<String>,
+    /// 禁用的扩展列表
+    #[serde(default)]
+    pub disabled: Vec<String>,
+    /// 扩展特定设置
+    #[serde(default)]
+    pub settings: HashMap<String, serde_json::Value>,
 }
 
 impl AppConfig {
@@ -196,6 +214,11 @@ impl AppConfig {
             }
             _ => None,
         }
+    }
+
+    /// 获取扩展配置
+    pub fn extensions_config(&self) -> Option<&ExtensionsConfig> {
+        self.extensions.as_ref()
     }
 }
 

@@ -6,8 +6,9 @@ pub mod types;
 pub mod loader;
 pub mod runner;
 pub mod api;
+pub mod builtin;
 
-pub use types::{ExtensionManifest, SlashCommand};
-pub use loader::ExtensionLoader;
+pub use types::{ExtensionManifest, SlashCommand, EventResult, ExtensionToolWrapper, CommandSource, CommandArgs, CommandResult};
+pub use loader::{ExtensionLoader, ExtensionFactory, ExtensionRegistry};
 pub use runner::ExtensionManager;
 pub use api::ExtensionContext;

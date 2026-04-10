@@ -204,6 +204,7 @@ impl AgentContext {
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     // Agent 生命周期
+    BeforeAgentStart,
     AgentStart,
     AgentEnd { messages: Vec<AgentMessage> },
 
@@ -230,6 +231,11 @@ pub enum AgentEvent {
     MessageEnd { message: AgentMessage },
 
     // Tool 执行生命周期
+    BeforeToolCall {
+        tool_call_id: String,
+        tool_name: String,
+        args: serde_json::Value,
+    },
     ToolExecutionStart {
         tool_call_id: String,
         tool_name: String,
@@ -246,6 +252,32 @@ pub enum AgentEvent {
         tool_name: String,
         result: AgentToolResult,
         is_error: bool,
+    },
+    AfterToolCall {
+        tool_call_id: String,
+        tool_name: String,
+        result: AgentToolResult,
+        is_error: bool,
+    },
+
+    // Slash 命令生命周期
+    BeforeCommandExecute {
+        command: String,
+        args: String,
+    },
+    AfterCommandExecute {
+        command: String,
+        result: String,
+    },
+
+    // 扩展生命周期
+    ExtensionLoaded {
+        name: String,
+        version: String,
+    },
+    ExtensionError {
+        name: String,
+        error: String,
     },
 }
 
