@@ -17,7 +17,7 @@ use pi_tui::tui::{Component, Focusable};
 use crate::core::agent_session::{AgentSession, AgentSessionConfig};
 use crate::core::export::HtmlExporter;
 use crate::core::session_manager::SessionManager;
-use crate::core::auth::{TokenStorage, get_oauth_provider, run_oauth_flow};
+use crate::core::auth::{TokenStorage, get_oauth_provider, list_oauth_providers, run_oauth_flow};
 use crate::config::AppConfig;
 use super::input_history::InputHistory;
 use super::autocomplete_providers::{FileAutocompleteProvider, ModelAutocompleteProvider};
@@ -68,7 +68,7 @@ impl CodingAgentAutocompleteProvider {
         slash_provider.add_command(SlashCommand::new("export", "Export session to HTML file").with_alias("export-html"));
         slash_provider.add_command(SlashCommand::new("compact", "Compact conversation history to save context space"));
         slash_provider.add_command(SlashCommand::new("extensions", "List loaded extensions"));
-        slash_provider.add_command(SlashCommand::new("login", "Login with OAuth provider (anthropic, github-copilot)"));
+        slash_provider.add_command(SlashCommand::new("login", "Login with OAuth provider (anthropic, github-copilot, openai, google)"));
         slash_provider.add_command(SlashCommand::new("logout", "Logout from OAuth provider"));
         slash_provider.add_command(SlashCommand::new("auth", "Show current authentication status"));
         slash_provider.add_command(SlashCommand::new("theme", "Switch color theme (dark, light)"));
@@ -653,7 +653,8 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                                 }
                             }
                             None => {
-                                message_history.add_system_message(format!("Unknown provider: {}. Available: anthropic, github-copilot", provider_name));
+                                let providers = list_oauth_providers().join(", ");
+                                message_history.add_system_message(format!("Unknown provider: {}. Available: {}", provider_name, providers));
                             }
                         }
                         let (term_width, _) = terminal.size();
@@ -1033,7 +1034,7 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                         message_history.add_system_message("  /extensions info <name> - Show extension details".to_string());
                         message_history.add_system_message("  /extensions enable <name> - Enable extension (next restart)".to_string());
                         message_history.add_system_message("  /extensions disable <name> - Disable extension (next restart)".to_string());
-                        message_history.add_system_message("  /login         - Login with OAuth (anthropic, github-copilot)".to_string());
+                        message_history.add_system_message("  /login         - Login with OAuth (anthropic, github-copilot, openai, google)".to_string());
                         message_history.add_system_message("  /logout        - Logout from OAuth provider".to_string());
                         message_history.add_system_message("  /auth          - Show authentication status".to_string());
                         message_history.add_system_message("  /theme         - Show or switch color theme".to_string());

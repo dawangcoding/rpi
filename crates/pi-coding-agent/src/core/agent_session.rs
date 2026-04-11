@@ -143,6 +143,9 @@ impl AgentSession {
             tool_list.push(Arc::new(tools::EditTool::new(config.cwd.clone())));
         }
         
+        // 添加 NotebookTool
+        tool_list.push(Arc::new(tools::NotebookTool::new(config.cwd.clone())));
+        
         // 合并扩展工具到工具列表
         tool_list.extend(extension_tools);
         
@@ -162,9 +165,9 @@ impl AgentSession {
         // ========================================
         // 4. 创建 Agent（此时工具列表已包含扩展工具）
         // ========================================
-        // 获取 API key
+        // 获取 API key（异步版本，支持 token 自动刷新）
         let provider_str = format!("{:?}", config.model.provider).to_lowercase();
-        let api_key = config.app_config.get_api_key(&provider_str);
+        let api_key = config.app_config.get_api_key_async(&provider_str).await;
         
         let mut agent_options = pi_agent::agent::AgentOptions {
             model: Some(config.model.clone()),

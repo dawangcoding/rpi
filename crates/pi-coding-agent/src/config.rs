@@ -8,6 +8,14 @@ use std::path::{Path, PathBuf};
 
 use crate::core::permissions::ToolPermissionConfig;
 
+/// 配置文件格式
+#[derive(Debug, Clone, Copy)]
+enum ConfigFormat {
+    Yaml,
+    Json,
+    Toml,
+}
+
 /// 应用配置
 /// 
 /// 管理应用的全局配置，包括 API keys、默认模型、会话目录等
@@ -81,17 +89,59 @@ pub struct ExtensionsConfig {
 }
 
 impl AppConfig {
-    /// 加载配置（从 ~/.pi/config.yaml）
-    pub fn load() -> anyhow::Result<Self> {
-        let config_path = Self::config_path();
+    /// 加载 .env 文件（从 ~/.pi/.env）
+    ///
+    /// 不覆盖已存在的环境变量
+    pub fn load_env_file() {
+        let config_dir = Self::config_dir();
+        let env_path = config_dir.join(".env");
+        if env_path.exists() {
+            // dotenvy::from_path 默认行为是不覆盖已有环境变量
+            if let Err(e) = dotenvy::from_path(&env_path) {
+                eprintln!("Warning: Failed to load .env file: {}", e);
+            }
+        }
+    }
 
-        if !config_path.exists() {
-            return Ok(Self::default());
+    /// 解析配置文件内容
+    fn parse_config(content: &str, format: ConfigFormat, path: &Path) -> anyhow::Result<Self> {
+        match format {
+            ConfigFormat::Yaml => serde_yaml::from_str(content)
+                .map_err(|e| anyhow::anyhow!("YAML config error in {}: {}", path.display(), e)),
+            ConfigFormat::Json => serde_json::from_str(content)
+                .map_err(|e| anyhow::anyhow!("JSON config error in {}: {}", path.display(), e)),
+            ConfigFormat::Toml => toml::from_str(content)
+                .map_err(|e| anyhow::anyhow!("TOML config error in {}: {}", path.display(), e)),
+        }
+    }
+
+    /// 加载配置（支持多格式自动检测）
+    ///
+    /// 按优先级搜索配置文件：config.yaml > config.yml > config.json > config.toml
+    /// 同时会加载 ~/.pi/.env 文件中的环境变量
+    pub fn load() -> anyhow::Result<Self> {
+        // 先加载 .env 文件
+        Self::load_env_file();
+
+        let config_dir = Self::config_dir();
+
+        // 按优先级搜索配置文件
+        let config_candidates = [
+            ("config.yaml", ConfigFormat::Yaml),
+            ("config.yml", ConfigFormat::Yaml),
+            ("config.json", ConfigFormat::Json),
+            ("config.toml", ConfigFormat::Toml),
+        ];
+
+        for (filename, format) in &config_candidates {
+            let path = config_dir.join(filename);
+            if path.exists() {
+                let content = std::fs::read_to_string(&path)?;
+                return Self::parse_config(&content, *format, &path);
+            }
         }
 
-        let content = std::fs::read_to_string(&config_path)?;
-        let config: AppConfig = serde_yaml::from_str(&content)?;
-        Ok(config)
+        Ok(Self::default())
     }
 
     /// 保存配置

@@ -43,9 +43,12 @@ keyring = "3"
 aes-gcm = "0.10"
 argon2 = "0.5"
 rand = "0.8"
+dotenvy = "0.15"
+toml = "0.8"
+tempfile.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 tokio-test.workspace = true
+serial_test = "3"

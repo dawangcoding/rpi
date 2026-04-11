@@ -4,6 +4,10 @@ use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Mutex as TokioMutex;
+use std::sync::Mutex as StdMutex;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredToken {
@@ -37,6 +41,8 @@ pub struct TokenStorage {
     /// 保留旧路径用于迁移检测
     #[allow(dead_code)] // 用于检测旧文件迁移
     legacy_path: PathBuf,
+    /// 并发刷新锁 - 按 provider 名称区分，防止多个请求同时刷新同一个 token
+    refresh_locks: Arc<StdMutex<HashMap<String, Arc<TokioMutex<()>>>>>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -284,7 +290,11 @@ impl TokenStorage {
             }
         };
         
-        let ts = Self { storage, legacy_path: legacy_path.clone() };
+        let ts = Self { 
+            storage, 
+            legacy_path: legacy_path.clone(),
+            refresh_locks: Arc::new(StdMutex::new(HashMap::new())),
+        };
         
         // 自动迁移旧版明文存储
         if legacy_path.exists() {
@@ -302,7 +312,16 @@ impl TokenStorage {
         Self {
             storage,
             legacy_path: PathBuf::from("/nonexistent"),
+            refresh_locks: Arc::new(StdMutex::new(HashMap::new())),
         }
+    }
+
+    /// 获取或创建指定 provider 的刷新锁
+    fn get_refresh_lock(&self, provider: &str) -> Arc<TokioMutex<()>> {
+        let mut locks = self.refresh_locks.lock().unwrap();
+        locks.entry(provider.to_string())
+            .or_insert_with(|| Arc::new(TokioMutex::new(())))
+            .clone()
     }
     
     fn migrate_from_plaintext(&self, legacy_path: &std::path::Path) -> Result<()> {
@@ -366,6 +385,8 @@ impl TokenStorage {
     }
     
     /// 刷新 token（使用 refresh_token 获取新的 access_token）
+    /// 
+    /// 包含基础重试机制：失败时重试 1 次，间隔 1 秒
     pub async fn refresh_token(&self, provider: &str, token_url: &str, client_id: &str) -> Result<StoredToken> {
         let stored = self.get_token(provider)
             .context("No stored token found")?;
@@ -374,10 +395,35 @@ impl TokenStorage {
             .context("No refresh token available")?;
         
         let client = reqwest::Client::new();
+        
+        // 第一次尝试
+        let result = self.do_refresh_token(&client, provider, token_url, client_id, &refresh_token).await;
+        
+        match result {
+            Ok(token) => Ok(token),
+            Err(e) => {
+                tracing::debug!("First token refresh attempt failed for {}: {}", provider, e);
+                // 等待 1 秒后重试
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::debug!("Retrying token refresh for {}", provider);
+                self.do_refresh_token(&client, provider, token_url, client_id, &refresh_token).await
+            }
+        }
+    }
+
+    /// 执行实际的 token 刷新请求
+    async fn do_refresh_token(
+        &self,
+        client: &reqwest::Client,
+        provider: &str,
+        token_url: &str,
+        client_id: &str,
+        refresh_token: &str,
+    ) -> Result<StoredToken> {
         let resp = client.post(token_url)
             .form(&[
                 ("grant_type", "refresh_token"),
-                ("refresh_token", &refresh_token),
+                ("refresh_token", refresh_token),
                 ("client_id", client_id),
             ])
             .send()
@@ -396,7 +442,7 @@ impl TokenStorage {
             refresh_token: token_response["refresh_token"]
                 .as_str()
                 .map(|s| s.to_string())
-                .or(Some(refresh_token)),
+                .or(Some(refresh_token.to_string())),
             expires_at: token_response["expires_in"]
                 .as_u64()
                 .map(|secs| Utc::now() + chrono::Duration::seconds(secs as i64)),
@@ -411,16 +457,32 @@ impl TokenStorage {
     /// 策略：
     /// 1. Token 有效且不在过期预警期 -> 直接返回
     /// 2. Token 即将过期（5分钟内）且有 refresh_token -> 尝试刷新
+    ///    - 使用并发锁确保同一时刻只有一个刷新请求
     ///    - 刷新成功 -> 返回新 token
     ///    - 刷新失败但 token 未过期 -> 返回旧 token 并记录警告
     /// 3. Token 已过期且刷新失败 -> 返回 None（需要重新登录）
+    /// 
+    /// 并发保护：
+    /// - 使用 provider 级别的锁，确保同一 provider 的并发刷新请求只触发一次实际刷新
+    /// - 其他请求会等待刷新完成后直接读取新 token
     pub async fn get_valid_token_or_refresh(
         &self,
         provider: &str,
     ) -> Option<String> {
+        // 先读取 token 状态（无锁，快速路径）
         let token = self.get_token(provider)?;
         
         // Token 有效且不在过期预警期
+        if !token.is_expired() && !token.is_expiring_soon() {
+            return Some(token.access_token.clone());
+        }
+        
+        // 需要刷新 - 获取该 provider 的刷新锁
+        let lock = self.get_refresh_lock(provider);
+        let _guard = lock.lock().await;
+        
+        // 获取锁后再次检查 token 状态（可能其他请求已经刷新成功）
+        let token = self.get_token(provider)?;
         if !token.is_expired() && !token.is_expiring_soon() {
             return Some(token.access_token.clone());
         }
@@ -432,14 +494,14 @@ impl TokenStorage {
                     return Some(new_token.access_token);
                 }
                 Err(e) => {
-                    eprintln!("Warning: Token refresh failed for {}: {}", provider, e);
+                    tracing::warn!("Token refresh failed for provider '{}': {}", provider, e);
                     // 刷新失败但 token 可能还没完全过期
                     if !token.is_expired() {
-                        eprintln!("Using existing token (expires soon)");
+                        tracing::info!("Using existing token for '{}' (expires soon)", provider);
                         return Some(token.access_token.clone());
                     }
-                    // Token 已过期且刷新失败
-                    eprintln!("Token expired for {}. Please run /login {} to re-authenticate.", provider, provider);
+                    // Token 已过期且刷新失败 - 记录警告日志提示用户重新登录
+                    tracing::warn!("Token refresh failed for provider '{}'. Please run '/login {}' to re-authenticate.", provider, provider);
                     return None;
                 }
             }
@@ -628,5 +690,198 @@ mod tests {
         assert!(keys.contains(&"key1".to_string()));
         assert!(keys.contains(&"key2".to_string()));
         assert!(keys.contains(&"key3".to_string()));
+    }
+
+    // ========== 并发刷新保护测试 ==========
+
+    #[tokio::test]
+    async fn test_concurrent_refresh_protection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration as StdDuration;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = EncryptedFileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+        let token_storage = TokenStorage::with_storage(Box::new(storage));
+
+        // 创建一个即将过期的 token
+        let token = create_test_token("test_provider", Some(Utc::now() + Duration::minutes(3)));
+        token_storage.save_token(&token).unwrap();
+
+        // 创建计数器来跟踪锁获取次数
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        // 模拟并发调用 get_refresh_lock
+        let mut handles = vec![];
+        for i in 0..5 {
+            let ts_clone = TokenStorage::with_storage(Box::new(
+                EncryptedFileStorage::new(temp_dir.path().join(format!("clone{}", i)).to_path_buf()).unwrap()
+            ));
+            let counter_clone = counter.clone();
+            let handle = tokio::spawn(async move {
+                let lock = ts_clone.get_refresh_lock("test_provider");
+                let _guard = lock.lock().await;
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+                // 模拟一些工作
+                tokio::time::sleep(StdDuration::from_millis(10)).await;
+            });
+            handles.push(handle);
+        }
+
+        // 等待所有任务完成
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // 所有锁都应该被成功获取
+        assert_eq!(counter.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_lock_per_provider() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = EncryptedFileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+        let token_storage = TokenStorage::with_storage(Box::new(storage));
+
+        // 获取不同 provider 的锁应该是独立的
+        let lock1 = token_storage.get_refresh_lock("provider1");
+        let lock2 = token_storage.get_refresh_lock("provider2");
+        let lock3 = token_storage.get_refresh_lock("provider1"); // 同一个 provider
+
+        // lock1 和 lock3 应该是同一个锁（Arc 克隆）
+        let guard1 = lock1.try_lock();
+        let guard3 = lock3.try_lock();
+
+        // lock1 和 lock3 是同一个 Arc，所以 lock3 应该无法获取锁
+        assert!(guard1.is_ok());
+        assert!(guard3.is_err()); // 已经被 lock1 占用
+
+        // lock2 是独立的，应该可以获取
+        let guard2 = lock2.try_lock();
+        assert!(guard2.is_ok());
+    }
+
+    // ========== 重试机制测试 ==========
+
+    #[tokio::test]
+    async fn test_retry_mechanism_first_fail_second_success() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // 创建一个计数器来跟踪请求次数
+        static REQUEST_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        // 启动一个模拟服务器
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                // 读取请求（必须读完请求后再响应）
+                let mut buf = vec![0u8; 4096];
+                let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+                let count = REQUEST_COUNT.fetch_add(1, Ordering::SeqCst);
+                
+                let response = if count == 0 {
+                    // 第一次请求失败
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_string()
+                } else {
+                    // 第二次请求成功
+                    let body = r#"{"access_token":"new_token","refresh_token":"new_refresh","expires_in":3600}"#;
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body)
+                };
+                
+                tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await.unwrap();
+                if count >= 1 {
+                    break;
+                }
+            }
+        });
+
+        // 等待服务器启动
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // 创建测试 token
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = EncryptedFileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+        let token_storage = TokenStorage::with_storage(Box::new(storage));
+
+        let token = StoredToken {
+            provider: "test_provider".to_string(),
+            access_token: "old_access_token".to_string(),
+            refresh_token: Some("test_refresh_token".to_string()),
+            expires_at: Some(Utc::now() + Duration::minutes(3)),
+        };
+        token_storage.save_token(&token).unwrap();
+
+        // 调用 refresh_token
+        let token_url = format!("http://127.0.0.1:{}/token", port);
+        let result = token_storage.refresh_token("test_provider", &token_url, "test_client_id").await;
+
+        // 等待服务器完成
+        tokio::time::timeout(std::time::Duration::from_secs(5), server).await.ok();
+
+        // 验证结果 - 应该成功（第二次尝试）
+        assert!(result.is_ok());
+        let new_token = result.unwrap();
+        assert_eq!(new_token.access_token, "new_token");
+        assert_eq!(new_token.refresh_token, Some("new_refresh".to_string()));
+        
+        // 验证请求了两次
+        assert_eq!(REQUEST_COUNT.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_retry_mechanism_both_fail() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // 创建一个计数器来跟踪请求次数
+        static REQUEST_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        // 启动一个模拟服务器 - 总是返回错误
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                // 读取请求
+                let mut buf = vec![0u8; 4096];
+                let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+                REQUEST_COUNT.fetch_add(1, Ordering::SeqCst);
+                
+                let response = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n";
+                tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await.unwrap();
+            }
+        });
+
+        // 等待服务器启动
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // 创建测试 token
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = EncryptedFileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+        let token_storage = TokenStorage::with_storage(Box::new(storage));
+
+        let token = StoredToken {
+            provider: "test_provider".to_string(),
+            access_token: "old_access_token".to_string(),
+            refresh_token: Some("test_refresh_token".to_string()),
+            expires_at: Some(Utc::now() + Duration::minutes(3)),
+        };
+        token_storage.save_token(&token).unwrap();
+
+        // 调用 refresh_token
+        let token_url = format!("http://127.0.0.1:{}/token", port);
+        let result = token_storage.refresh_token("test_provider", &token_url, "test_client_id").await;
+
+        // 等待服务器完成
+        tokio::time::timeout(std::time::Duration::from_secs(5), server).await.ok();
+
+        // 验证结果 - 应该失败
+        assert!(result.is_err());
+        
+        // 验证了两次请求（原始请求 + 1次重试）
+        assert_eq!(REQUEST_COUNT.load(Ordering::SeqCst), 2);
     }
 }

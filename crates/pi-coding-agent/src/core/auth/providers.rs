@@ -63,7 +63,6 @@ pub fn get_oauth_provider(name: &str) -> Option<OAuthProviderConfig> {
 }
 
 /// 列出所有支持的 OAuth 提供商
-#[allow(dead_code)]
 pub fn list_oauth_providers() -> Vec<&'static str> {
     vec!["anthropic", "github-copilot", "openai", "google"]
 }

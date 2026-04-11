@@ -78,12 +78,19 @@ pub fn build_system_prompt(options: &BuildSystemPromptOptions) -> String {
     let has_grep = options.tools.iter().any(|t| t.name() == "grep");
     let has_find = options.tools.iter().any(|t| t.name() == "find");
     let has_ls = options.tools.iter().any(|t| t.name() == "ls");
+    let has_notebook = options.tools.iter().any(|t| t.name() == "notebook");
     
     // 根据可用工具添加指南
     if has_bash && !has_grep && !has_find && !has_ls {
         prompt.push_str("- Use bash for file operations like ls, rg, find\n");
     } else if has_bash && (has_grep || has_find || has_ls) {
         prompt.push_str("- Prefer grep/find/ls tools over bash for file exploration (faster, respects .gitignore)\n");
+    }
+    
+    // Notebook 工具指南
+    if has_notebook {
+        prompt.push_str("- Use the notebook tool to execute Python or Node.js code when you need to run calculations, data analysis, or generate visualizations\n");
+        prompt.push_str("- Notebook tool captures stdout, stderr, and image outputs from code execution\n");
     }
     
     // 添加自定义指南

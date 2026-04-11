@@ -105,7 +105,13 @@ impl Markdown {
                             } else {
                                 format!(" {}", code_block_lang)
                             };
-                            lines.push(format!("\x1b[90m```{}\x1b[0m", lang_str));
+                            // 为可执行语言添加标识
+                            let executable_marker = match code_block_lang.as_str() {
+                                "python" | "python3" | "py" => " [executable]",
+                                "javascript" | "js" | "node" | "nodejs" => " [executable]",
+                                _ => "",
+                            };
+                            lines.push(format!("\x1b[90m```{}{}\x1b[0m", lang_str, executable_marker));
                         }
                         Tag::Strong => in_bold = true,
                         Tag::Emphasis => in_italic = true,
@@ -173,9 +179,31 @@ impl Markdown {
                         TagEnd::CodeBlock => {
                             in_code_block = false;
                             if !current_text.is_empty() {
+                                // 检测是否为输出区域
+                                let is_output_block = matches!(code_block_lang.as_str(), "output" | "result");
                                 // 渲染代码块内容
                                 for line in current_text.lines() {
-                                    lines.push(format!("  \x1b[36m{}\x1b[0m", line));
+                                    if is_output_block {
+                                        // 输出区域使用绿色
+                                        lines.push(format!("  \x1b[32m{}\x1b[0m", line));
+                                    } else {
+                                        // 检测错误/stderr 内容使用红色渲染
+                                        let color = if line.starts_with("[stderr]")
+                                            || line.starts_with("Traceback")
+                                            || line.starts_with("Error:")
+                                            || line.starts_with("SyntaxError:")
+                                            || line.starts_with("TypeError:")
+                                            || line.starts_with("ValueError:")
+                                            || line.starts_with("NameError:")
+                                            || line.starts_with("RuntimeError:")
+                                            || line.contains("error[E")  // Rust 编译错误
+                                        {
+                                            "\x1b[31m"  // 红色
+                                        } else {
+                                            "\x1b[36m"  // 青色（默认）
+                                        };
+                                        lines.push(format!("  {}{}\x1b[0m", color, line));
+                                    }
                                 }
                                 current_text.clear();
                             }
