@@ -11,6 +11,7 @@ path = "src/main.rs"
 pi-ai = { path = "../pi-ai" }
 pi-tui = { path = "../pi-tui" }
 pi-agent = { path = "../pi-agent" }
+pi-mcp = { path = "../pi-mcp" }
 tokio.workspace = true
 tokio-util.workspace = true
 serde.workspace = true

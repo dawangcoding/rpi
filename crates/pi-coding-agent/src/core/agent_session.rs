@@ -78,6 +78,7 @@ pub struct AgentSession {
     compactor: Arc<SessionCompactor>,
     compaction_history: Arc<RwLock<Vec<CompactionRecord>>>,
     extension_manager: ExtensionManager,
+    mcp_tool_manager: Option<Arc<tools::McpToolManager>>,
 }
 
 impl AgentSession {
@@ -148,6 +149,32 @@ impl AgentSession {
         
         // 合并扩展工具到工具列表
         tool_list.extend(extension_tools);
+        
+        // ========================================
+        // 2.5 初始化 MCP 工具管理器并发现工具
+        // ========================================
+        let mcp_tool_manager = Arc::new(tools::McpToolManager::new());
+        
+        // 非阻塞方式初始化 MCP Servers - 错误不影响 Agent 启动
+        if let Err(e) = mcp_tool_manager.init_from_config().await {
+            tracing::warn!("Failed to initialize MCP servers: {}", e);
+        }
+        
+        // 发现 MCP 工具并添加到工具列表
+        match mcp_tool_manager.discover_tools().await {
+            Ok(mcp_tools) => {
+                if !mcp_tools.is_empty() {
+                    tracing::info!(tool_count = mcp_tools.len(), "Discovered MCP tools");
+                    // MCP 工具是 Tool 类型，不是 AgentTool，所以需要转换
+                    // 但 MCP 工具的调用由 McpToolManager 处理，这里只用于展示
+                    // 实际的工具调用逻辑需要在 agent_loop 中处理
+                    tracing::debug!("MCP tools will be registered with the agent");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to discover MCP tools: {}", e);
+            }
+        }
         
         // ========================================
         // 3. 构建系统提示词
@@ -274,6 +301,7 @@ impl AgentSession {
             compactor,
             compaction_history,
             extension_manager,
+            mcp_tool_manager: Some(mcp_tool_manager),
         })
     }
     
@@ -484,11 +512,24 @@ impl AgentSession {
     pub fn session_manager(&self) -> Option<&SessionManager> {
         self.session_manager.as_ref()
     }
+    
+    /// 获取 MCP 工具管理器
+    pub fn mcp_tool_manager(&self) -> Option<Arc<tools::McpToolManager>> {
+        self.mcp_tool_manager.clone()
+    }
 
     /// 关闭会话，清理资源
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
         // 停用所有扩展
         self.extension_manager.deactivate_all().await?;
+        
+        // 停止所有 MCP Servers
+        if let Some(ref mcp_manager) = self.mcp_tool_manager {
+            if let Err(e) = mcp_manager.shutdown().await {
+                tracing::warn!("Failed to shutdown MCP servers: {}", e);
+            }
+        }
+        
         Ok(())
     }
 

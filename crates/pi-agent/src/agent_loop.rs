@@ -341,6 +341,7 @@ async fn stream_assistant_response(
         headers: None,
         max_retry_delay_ms: config.max_retry_delay_ms,
         metadata: None,
+        retry_config: None,
     };
 
     // 调用 pi_ai::stream() 获取事件流

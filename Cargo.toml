@@ -5,6 +5,7 @@ members = [
     "crates/pi-tui",
     "crates/pi-agent",
     "crates/pi-coding-agent",
+    "crates/pi-mcp",
 ]
 
 [workspace.dependencies]

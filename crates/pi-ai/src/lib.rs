@@ -43,6 +43,7 @@ pub mod models;
 pub mod providers;
 pub mod utils;
 pub mod token_counter;
+pub mod retry;
 
 #[cfg(test)]
 pub mod test_fixtures;
@@ -65,8 +66,11 @@ pub use api_registry::{
 // 重导出流式 API
 pub use stream::{
     stream, stream_simple, complete, complete_simple,
-    stream_by_model_id, complete_by_model_id,
+    stream_by_model_id, complete_by_model_id, stream_with_retry,
 };
+
+// 重导出重试模块
+pub use retry::{RetryConfig, RetryPolicy, StreamRecoveryState, StreamRecoveryStats};
 
 // 重导出模型相关函数
 pub use models::{
@@ -104,6 +108,8 @@ pub fn init_providers() {
     register_api_provider(Arc::new(providers::AzureOpenAiProvider::new()));
     register_api_provider(Arc::new(providers::XaiProvider::new()));
     register_api_provider(Arc::new(providers::OpenRouterProvider::new()));
+    register_api_provider(Arc::new(providers::GroqProvider::new()));
+    register_api_provider(Arc::new(providers::CerebrasProvider::new()));
 
-    tracing::debug!("Registered 8 built-in providers: Anthropic, OpenAI(ChatCompletions), Google, Mistral, Bedrock, AzureOpenAI, XAI, OpenRouter");
+    tracing::debug!("Registered 10 built-in providers: Anthropic, OpenAI(ChatCompletions), Google, Mistral, Bedrock, AzureOpenAI, XAI, OpenRouter, Groq, Cerebras");
 }

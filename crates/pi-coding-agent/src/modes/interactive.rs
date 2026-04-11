@@ -170,6 +170,8 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
         read_only: false,
         line_numbers: false,
         wrap: true,
+        editor_mode: pi_tui::components::editor::EditorMode::Emacs,
+        relative_line_numbers: false,
     });
     editor.set_focused(true);
     

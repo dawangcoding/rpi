@@ -175,6 +175,7 @@ pub mod fixtures {
             headers: None,
             max_retry_delay_ms: None,
             metadata: None,
+            retry_config: None,
         }
     }
 

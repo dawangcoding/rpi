@@ -615,6 +615,8 @@ pub struct StreamOptions {
     pub max_retry_delay_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    #[serde(rename = "retryConfig", skip_serializing_if = "Option::is_none")]
+    pub retry_config: Option<crate::retry::RetryConfig>,
 }
 
 /// 思考预算
@@ -655,6 +657,8 @@ pub struct SimpleStreamOptions {
     pub reasoning: Option<ThinkingLevel>,
     #[serde(rename = "thinkingBudgets", skip_serializing_if = "Option::is_none")]
     pub thinking_budgets: Option<ThinkingBudgets>,
+    #[serde(rename = "retryConfig", skip_serializing_if = "Option::is_none")]
+    pub retry_config: Option<crate::retry::RetryConfig>,
 }
 
 /// 完成原因枚举

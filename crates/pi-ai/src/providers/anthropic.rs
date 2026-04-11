@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::time::Duration;
+// Duration 导入已移除，重试逻辑已统一移到 stream.rs
 
 use anyhow::{Context as AnyhowContext, Result};
 use async_trait::async_trait;
@@ -531,6 +531,9 @@ impl AnthropicProvider {
     }
 
     /// 带重试的流式请求
+    /// 
+    /// 注意：重试逻辑已统一移到 stream.rs 层面的 stream_with_retry
+    /// 此方法现在直接调用 try_stream，不再内部处理重试
     async fn stream_with_retry(
         &self,
         context: &Context,
@@ -538,33 +541,7 @@ impl AnthropicProvider {
         options: &StreamOptions,
         api_key: &str,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<AssistantMessageEvent>> + Send>>> {
-        let max_retries = 3;
-        let mut retry_count = 0;
-        let mut delay_ms = 1000;
-        let max_delay_ms = options.max_retry_delay_ms.unwrap_or(30000);
-
-        loop {
-            match self.try_stream(context, model, options, api_key).await {
-                Ok(stream) => return Ok(stream),
-                Err(e) => {
-                    let err_str = e.to_string();
-                    let should_retry = err_str.contains("429")
-                        || err_str.contains("529")
-                        || err_str.contains("rate limit")
-                        || err_str.contains("overloaded")
-                        || err_str.contains("connection")
-                        || err_str.contains("timeout");
-
-                    if !should_retry || retry_count >= max_retries {
-                        return Err(e);
-                    }
-
-                    retry_count += 1;
-                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                    delay_ms = (delay_ms * 2).min(max_delay_ms);
-                }
-            }
-        }
+        self.try_stream(context, model, options, api_key).await
     }
 
     /// 尝试流式请求
@@ -1405,12 +1382,12 @@ data: {"type":"message_stop"}
 
         let error_json = r#"{"error": {"type": "rate_limit_error", "message": "Rate limit exceeded"}}"#;
 
-        // 因为有重试机制，需要设置多次期望
+        // 重试逻辑已移到 stream.rs 层面，provider 层面只请求一次
         let mock = server.mock("POST", "/v1/messages")
             .with_status(429)
             .with_header("content-type", "application/json")
             .with_body(error_json)
-            .expect(4) // 重试3次+初始请求
+            .expect(1)
             .create_async()
             .await;
 

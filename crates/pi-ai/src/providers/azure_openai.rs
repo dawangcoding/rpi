@@ -9,7 +9,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::time::Duration;
+// Duration 导入已移除，重试逻辑已统一移到 stream.rs
 use tracing::{debug, trace, warn};
 
 use crate::api_registry::ApiProvider;
@@ -253,27 +253,8 @@ impl ApiProvider for AzureOpenAiProvider {
         model: &Model,
         options: &StreamOptions,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<AssistantMessageEvent>> + Send>>> {
-        let max_retries = 3;
-        let mut last_error = None;
-
-        for attempt in 0..max_retries {
-            match self.do_stream(context, model, options).await {
-                Ok(stream) => return Ok(stream),
-                Err(e) => {
-                    let should_retry = is_retryable_error(&e);
-                    last_error = Some(e);
-                    
-                    if should_retry && attempt < max_retries - 1 {
-                        let delay = Duration::from_millis(500 * (attempt as u64 + 1));
-                        tokio::time::sleep(delay).await;
-                        continue;
-                    }
-                    break;
-                }
-            }
-        }
-
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Unknown error")))
+        // 重试逻辑已统一移到 stream.rs 层面的 stream_with_retry
+        self.do_stream(context, model, options).await
     }
 }
 
@@ -850,27 +831,6 @@ fn map_reasoning_effort(reasoning: &serde_json::Value, effort_map: &HashMap<Stri
     };
     
     effort_map.get(&effort_str).cloned().unwrap_or(effort_str)
-}
-
-/// 检查错误是否可重试
-fn is_retryable_error(error: &anyhow::Error) -> bool {
-    let error_string = error.to_string().to_lowercase();
-    
-    // 429 Too Many Requests
-    if error_string.contains("429") || error_string.contains("too many requests") {
-        return true;
-    }
-    
-    // 网络错误
-    if error_string.contains("connection") 
-        || error_string.contains("timeout")
-        || error_string.contains("network")
-        || error_string.contains("dns")
-        || error_string.contains("reset") {
-        return true;
-    }
-    
-    false
 }
 
 /// 注册 Azure OpenAI Provider

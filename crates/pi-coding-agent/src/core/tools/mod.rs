@@ -11,6 +11,7 @@ pub mod find;
 pub mod ls;
 pub mod truncate;
 pub mod notebook;
+pub mod mcp;
 
 pub use bash::BashTool;
 pub use read::ReadTool;
@@ -20,3 +21,4 @@ pub use grep::GrepTool;
 pub use find::FindTool;
 pub use ls::LsTool;
 pub use notebook::NotebookTool;
+pub use mcp::McpToolManager;

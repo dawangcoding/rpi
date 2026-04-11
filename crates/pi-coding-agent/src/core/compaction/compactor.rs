@@ -334,6 +334,7 @@ impl SessionCompactor {
             metadata: None,
             reasoning: None,
             thinking_budgets: None,
+            retry_config: None,
         };
 
         // 调用 LLM

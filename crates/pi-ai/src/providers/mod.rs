@@ -6,6 +6,8 @@ pub mod bedrock;
 pub mod azure_openai;
 pub mod xai;
 pub mod openrouter;
+pub mod groq;
+pub mod cerebras;
 
 pub use anthropic::AnthropicProvider;
 pub use openai::OpenAiProvider;
@@ -15,3 +17,5 @@ pub use bedrock::BedrockProvider;
 pub use azure_openai::AzureOpenAiProvider;
 pub use xai::XaiProvider;
 pub use openrouter::OpenRouterProvider;
+pub use groq::GroqProvider;
+pub use cerebras::CerebrasProvider;
