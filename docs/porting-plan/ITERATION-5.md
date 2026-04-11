@@ -31,7 +31,7 @@
 
 ### ITERATION-4 遗留的关键问题
 
-1. **扩展系统事件钩子缺失（P0）** - 原版有 20+ 事件类型，rpi3 仅有 WASM 框架，事件分发系统待完成
+1. **扩展系统事件钩子缺失（P0）** - 原版有 20+ 事件类型，rpi 仅有 WASM 框架，事件分发系统待完成
 2. **Google 生态 Provider 不完整（P1）** - 缺少 Google Vertex AI 和 Gemini CLI Provider
 3. **其他 LLM Provider 缺失（P1）** - Minimax、Huggingface、Kimi、OpenCode 等 12 个 Provider 待实现
 4. **OAuth 完整化（P1）** - 所有 Provider 的 OAuth 认证、Token 刷新统一流程

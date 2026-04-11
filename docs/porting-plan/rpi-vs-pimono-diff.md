@@ -1,7 +1,7 @@
-# rpi3 (Rust) vs pi-mono (TypeScript) 功能差异对比分析
+# rpi (Rust) vs pi-mono (TypeScript) 功能差异对比分析
 
 > 分析时间：2026年4月11日
-> 分析范围：rpi3 全量源码 + pi-mono 研究文档
+> 分析范围：rpi 全量源码 + pi-mono 研究文档
 > 深度：架构级、模块级、文件级
 
 ## 一、项目概览
@@ -13,7 +13,7 @@
 - **coding-agent**: CLI 入口 + 7 个内置工具 + 扩展系统
 - **其他**: mom (Slack bot)、web-ui、pods (GPU 管理)
 
-### rpi3 结构（Rust）
+### rpi 结构（Rust）
 - **pi-ai**: LLM 统一 API 层
 - **pi-tui**: 终端 UI 框架
 - **pi-agent**: Agent 运行时核心
@@ -39,7 +39,7 @@
 | **Thinking 支持** | ✓ thinking content block 处理 |
 | **错误重试** | ✓ 自动重试 (maxRetryDelayMs) |
 
-#### rpi3 Rust 实现状态
+#### rpi Rust 实现状态
 
 **已实现的 Provider (10个)**：
 
@@ -106,7 +106,7 @@
 | **输入组件** | ✓ Input + SelectList + SettingsList |
 | **Vim 模式** | ✗ 未实现 |
 
-#### rpi3 Rust 实现状态
+#### rpi Rust 实现状态
 
 **核心模块已实现**：
 - ✓ Terminal trait 抽象 (ProcessTerminal - crossterm 实现)
@@ -168,7 +168,7 @@
 | **AfterToolCall 钩子** | ✓ 可修改工具结果 |
 | **取消机制** | ✓ AbortSignal / CancellationToken |
 
-#### rpi3 Rust 实现状态
+#### rpi Rust 实现状态
 
 - ✓ AgentTool trait 定义
 - ✓ Agent 结构体 (prompt/steer/followUp/abort/reset/continue)
@@ -210,7 +210,7 @@
 | **快捷键配置** | ✓ 可配置的快捷键 |
 | **MCP 支持** | ✗ 原版不支持 |
 
-#### rpi3 Rust 实现状态
+#### rpi Rust 实现状态
 
 **7 个核心工具 - 全部实现**：
 
@@ -254,7 +254,7 @@
 
 ---
 
-### 5. pi-mcp — MCP 协议支持（rpi3 全新增）
+### 5. pi-mcp — MCP 协议支持（rpi 全新增）
 
 | 功能项 | 实现情况 |
 |--------|---------|
@@ -295,7 +295,7 @@
 | pi-ai | 重试机制 | **超越原版**：指数退避 + 随机抖动 |
 | OAuth 认证 | 多提供商 | 框架完成，部分 Provider 支持 |
 
-### 新增功能（rpi3 独有）
+### 新增功能（rpi 独有）
 
 | 功能 | 说明 |
 |------|------|
@@ -307,7 +307,7 @@
 
 ### 缺失功能（相对原版）
 
-| 功能 | 原版 | rpi3 | 优先级 |
+| 功能 | 原版 | rpi | 优先级 |
 |------|------|------|--------|
 | 扩展系统事件钩子 | ✓ 20+ 事件 | ⏳ WASM 框架已有 | 中 |
 | Google Vertex | ✓ | ✗ | 中 |

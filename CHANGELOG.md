@@ -113,5 +113,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Major/Minor**: 每个 ITERATION 完成后发布
 - **Patch**: Bug 修复和小的改进
 
-[0.2.0]: https://github.com/pi-mono/rpi3/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/pi-mono/rpi3/releases/tag/v0.1.0
+[0.2.0]: https://github.com/pi-mono/rpi/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/pi-mono/rpi/releases/tag/v0.1.0

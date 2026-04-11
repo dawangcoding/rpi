@@ -3,7 +3,7 @@
 ## 项目结构
 
 ```
-/Users/lzmcoding/Code/rpi3/
+/Users/lzmcoding/Code/rpi/
 ├── Cargo.toml                    # workspace 根配置
 ├── crates/
 │   ├── pi-ai/                    # LLM 统一 API 层
