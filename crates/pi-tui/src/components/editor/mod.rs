@@ -1,6 +1,9 @@
 //! 多行文本编辑器组件
 //! 支持光标移动、文本编辑、撤销重做、自动完成等功能
 
+pub mod vim;
+pub mod vim_commands;
+
 use crate::autocomplete::{AutocompleteProvider, AutocompleteSuggestions};
 use crate::kill_ring::{KillRing, PushOptions};
 use crate::tui::{Component, Focusable};
@@ -60,6 +63,16 @@ impl Selection {
     }
 }
 
+/// 编辑器模式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EditorMode {
+    /// Emacs 模式（默认）
+    #[default]
+    Emacs,
+    /// Vim 模式
+    Vim,
+}
+
 /// 编辑器配置
 /// 
 /// 控制编辑器的行为和外观
@@ -75,6 +88,10 @@ pub struct EditorConfig {
     pub line_numbers: bool,
     /// 自动换行
     pub wrap: bool,
+    /// 编辑器模式（Emacs 或 Vim）
+    pub editor_mode: EditorMode,
+    /// 相对行号（Vim 模式下）
+    pub relative_line_numbers: bool,
 }
 
 impl Default for EditorConfig {
@@ -85,6 +102,8 @@ impl Default for EditorConfig {
             read_only: false,
             line_numbers: false,
             wrap: true,
+            editor_mode: EditorMode::Emacs,
+            relative_line_numbers: false,
         }
     }
 }
@@ -133,6 +152,9 @@ pub struct Editor {
 
     // 粘贴标记计数器
     paste_counter: usize,
+
+    // Vim 状态
+    vim_state: Option<vim::VimState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +168,12 @@ enum LastAction {
 impl Editor {
     /// 创建新的编辑器
     pub fn new(config: EditorConfig) -> Self {
+        let vim_state = if config.editor_mode == EditorMode::Vim {
+            Some(vim::VimState::new())
+        } else {
+            None
+        };
+        
         Self {
             lines: vec![String::new()],
             cursor_row: 0,
@@ -164,6 +192,7 @@ impl Editor {
             last_width: 80,
             last_action: LastAction::None,
             paste_counter: 0,
+            vim_state,
         }
     }
 
@@ -888,6 +917,21 @@ impl Editor {
         !self.is_empty() || self.undo_stack.can_undo()
     }
 
+    /// 获取 Vim 模式指示器（如果处于 Vim 模式）
+    pub fn get_vim_mode_indicator(&self) -> Option<String> {
+        self.vim_state.as_ref().map(|v| v.get_status_line())
+    }
+
+    /// 是否处于 Vim 模式
+    pub fn is_vim_mode(&self) -> bool {
+        self.vim_state.is_some()
+    }
+
+    /// 获取当前 Vim 模式（如果处于 Vim 模式）
+    pub fn vim_mode(&self) -> Option<vim::VimMode> {
+        self.vim_state.as_ref().map(|v| v.mode)
+    }
+
     // === 内部辅助 ===
 
     /// 确保光标位置有效
@@ -1112,10 +1156,33 @@ impl Component for Editor {
             lines.extend(autocomplete_lines);
         }
 
+        // Vim 模式状态栏
+        if let Some(ref vim) = self.vim_state {
+            let status = vim.get_status_line();
+            if !status.is_empty() {
+                lines.push(format!("\x1b[1m{}\x1b[0m", status)); // 粗体显示
+            }
+        }
+
         lines
     }
 
     fn handle_input(&mut self, data: &str) -> bool {
+        // 如果处于 Vim 模式，优先使用 Vim 输入处理
+        if self.vim_state.is_some() {
+            return self.handle_vim_input(data);
+        }
+        self.handle_emacs_input(data)
+    }
+
+    fn invalidate(&mut self) {
+        self.needs_render = true;
+    }
+}
+
+impl Editor {
+    /// Emacs 模式输入处理（原有逻辑）
+    fn handle_emacs_input(&mut self, data: &str) -> bool {
         // 基本按键处理
         match data {
             // 字符输入
@@ -1217,10 +1284,6 @@ impl Component for Editor {
             }
             _ => false,
         }
-    }
-
-    fn invalidate(&mut self) {
-        self.needs_render = true;
     }
 }
 
@@ -1608,123 +1671,617 @@ mod tests {
         assert_eq!(editor.line_count(), 3);
         assert_eq!(editor.get_text(), "First\nSecond\nThird");
     }
-}
-#[test]
-fn test_editor_undo_debug() {
-    let mut editor = Editor::new(EditorConfig::default());
-    println!("Initial: lines={:?}, undo_stack.len={}", editor.lines, editor.undo_stack.len());
-    
-    editor.insert_text("hello");
-    println!("After insert: lines={:?}, undo_stack.len={}", editor.lines, editor.undo_stack.len());
-    
-    let undo_result = editor.undo_stack.undo();
-    println!("undo_stack.undo() result: {:?}", undo_result.map(|s| s.lines.clone()));
-    
-    // 手动恢复状态
-    if let Some(snapshot) = undo_result {
-        editor.lines = snapshot.lines.clone();
-        println!("After manual restore: lines={:?}", editor.lines);
-    } else {
-        println!("undo_result is None");
+
+    #[test]
+    fn test_editor_undo_debug() {
+        let mut editor = Editor::new(EditorConfig::default());
+        println!("Initial: lines={:?}, undo_stack.len={}", editor.lines, editor.undo_stack.len());
+        
+        editor.insert_text("hello");
+        println!("After insert: lines={:?}, undo_stack.len={}", editor.lines, editor.undo_stack.len());
+        
+        let undo_result = editor.undo_stack.undo();
+        println!("undo_stack.undo() result: {:?}", undo_result.map(|s| s.lines.clone()));
+        
+        // 手动恢复状态
+        if let Some(snapshot) = undo_result {
+            editor.lines = snapshot.lines.clone();
+            println!("After manual restore: lines={:?}", editor.lines);
+        } else {
+            println!("undo_result is None");
+        }
     }
-}
-#[test]
-fn test_editor_redo_debug() {
-    let mut editor = Editor::new(EditorConfig::default());
-    
-    editor.insert_text("Hello");
-    println!("After insert: text='{}', undo_stack.len={}, index should be 1", 
-             editor.get_text(), editor.undo_stack.len());
-    
-    editor.undo();
-    println!("After undo: text='{}', is_empty={}", editor.get_text(), editor.is_empty());
-    
-    let can_redo = editor.undo_stack.can_redo();
-    println!("can_redo={}", can_redo);
-    
-    let redo_result = editor.undo_stack.redo();
-    println!("redo() result: {:?}", redo_result.map(|s| s.lines.clone()));
-    
-    editor.redo();
-    println!("After editor.redo(): text='{}'", editor.get_text());
-}
 
-#[test]
-fn test_editor_empty_content_render() {
-    let editor = Editor::new(EditorConfig::default());
-    
-    // 测试空内容渲染
-    let lines = editor.render(80);
-    assert!(!lines.is_empty());
-    
-    // 空编辑器应该至少有一行
-    assert!(!lines.is_empty());
-}
+    #[test]
+    fn test_editor_redo_debug() {
+        let mut editor = Editor::new(EditorConfig::default());
+        
+        editor.insert_text("Hello");
+        println!("After insert: text='{}', undo_stack.len={}, index should be 1", 
+                 editor.get_text(), editor.undo_stack.len());
+        
+        editor.undo();
+        println!("After undo: text='{}', is_empty={}", editor.get_text(), editor.is_empty());
+        
+        let can_redo = editor.undo_stack.can_redo();
+        println!("can_redo={}", can_redo);
+        
+        let redo_result = editor.undo_stack.redo();
+        println!("redo() result: {:?}", redo_result.map(|s| s.lines.clone()));
+        
+        editor.redo();
+        println!("After editor.redo(): text='{}'", editor.get_text());
+    }
 
-#[test]
-fn test_editor_unicode_wide_chars() {
-    let mut editor = Editor::new(EditorConfig::default());
-    
-    // 测试 Unicode 宽字符（如中文、emoji）
-    editor.insert_text("Hello 世界 🎉");
-    assert_eq!(editor.get_text(), "Hello 世界 🎉");
-    
-    // 测试渲染
-    let lines = editor.render(80);
-    assert!(!lines.is_empty());
-    
-    // 测试光标移动
-    editor.move_end();
-    let (row, col) = editor.cursor_position();
-    assert_eq!(row, 0);
-    // 列位置应该考虑字符宽度
-    assert!(col > 0);
-}
+    #[test]
+    fn test_editor_empty_content_render() {
+        let editor = Editor::new(EditorConfig::default());
+        
+        // 测试空内容渲染
+        let lines = editor.render(80);
+        assert!(!lines.is_empty());
+        
+        // 空编辑器应该至少有一行
+        assert!(!lines.is_empty());
+    }
 
-#[test]
-fn test_editor_mixed_unicode_ascii() {
-    let mut editor = Editor::new(EditorConfig::default());
-    
-    // 混合 ASCII 和 Unicode 字符
-    editor.insert_text("Test: 测试");
-    editor.new_line();
-    editor.insert_text("Emoji: 🎉🎊");
-    
-    assert_eq!(editor.line_count(), 2);
-    let text = editor.get_text();
-    assert!(text.contains("测试"));
-    assert!(text.contains("🎉"));
-}
+    #[test]
+    fn test_editor_unicode_wide_chars() {
+        let mut editor = Editor::new(EditorConfig::default());
+        
+        // 测试 Unicode 宽字符（如中文、emoji）
+        editor.insert_text("Hello 世界 🎉");
+        assert_eq!(editor.get_text(), "Hello 世界 🎉");
+        
+        // 测试渲染
+        let lines = editor.render(80);
+        assert!(!lines.is_empty());
+        
+        // 测试光标移动
+        editor.move_end();
+        let (row, col) = editor.cursor_position();
+        assert_eq!(row, 0);
+        // 列位置应该考虑字符宽度
+        assert!(col > 0);
+    }
 
-#[test]
-fn test_editor_render_with_placeholder() {
-    let config = EditorConfig {
-        placeholder: Some("Enter text here...".to_string()),
-        ..Default::default()
-    };
-    let editor = Editor::new(config);
-    
-    // 空编辑器应该显示占位符
-    let lines = editor.render(80);
-    assert!(!lines.is_empty());
-}
+    #[test]
+    fn test_editor_mixed_unicode_ascii() {
+        let mut editor = Editor::new(EditorConfig::default());
+        
+        // 混合 ASCII 和 Unicode 字符
+        editor.insert_text("Test: 测试");
+        editor.new_line();
+        editor.insert_text("Emoji: 🎉🎊");
+        
+        assert_eq!(editor.line_count(), 2);
+        let text = editor.get_text();
+        assert!(text.contains("测试"));
+        assert!(text.contains("🎉"));
+    }
 
-#[test]
-fn test_editor_cursor_with_unicode() {
-    let mut editor = Editor::new(EditorConfig::default());
-    
-    editor.insert_text("中文字符");
-    
-    // 移动到开头
-    editor.move_home();
-    let (row, col) = editor.cursor_position();
-    assert_eq!(row, 0);
-    assert_eq!(col, 0);
-    
-    // 移动到结尾
-    editor.move_end();
-    let (row, col) = editor.cursor_position();
-    assert_eq!(row, 0);
-    // 应该位于最后一个字符之后
-    assert!(col >= 4); // 4 个中文字符
+    #[test]
+    fn test_editor_render_with_placeholder() {
+        let config = EditorConfig {
+            placeholder: Some("Enter text here...".to_string()),
+            ..Default::default()
+        };
+        let editor = Editor::new(config);
+        
+        // 空编辑器应该显示占位符
+        let lines = editor.render(80);
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn test_editor_cursor_with_unicode() {
+        let mut editor = Editor::new(EditorConfig::default());
+        
+        editor.insert_text("中文字符");
+        
+        // 移动到开头
+        editor.move_home();
+        let (row, col) = editor.cursor_position();
+        assert_eq!(row, 0);
+        assert_eq!(col, 0);
+        
+        // 移动到结尾
+        editor.move_end();
+        let (row, col) = editor.cursor_position();
+        assert_eq!(row, 0);
+        // 应该位于最后一个字符之后
+        assert!(col >= 4); // 4 个中文字符
+    }
+
+    #[test]
+    fn test_editor_vim_mode_disabled_by_default() {
+        let editor = Editor::new(EditorConfig::default());
+        assert!(!editor.is_vim_mode());
+        assert!(editor.get_vim_mode_indicator().is_none());
+    }
+
+    #[test]
+    fn test_editor_vim_mode_enabled() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let editor = Editor::new(config);
+        assert!(editor.is_vim_mode());
+        assert!(editor.get_vim_mode_indicator().is_some());
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Normal));
+    }
+
+    #[test]
+    fn test_vim_basic_movement() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("Hello World\nSecond Line\nThird Line");
+        // Vim 模式默认在 Normal 模式，光标在 (最后一行末尾因为 set_text)
+        // 先移到开头
+        editor.handle_input("g");
+        editor.handle_input("g");
+        assert_eq!(editor.cursor_position(), (0, 0));
+        
+        // l 右移
+        editor.handle_input("l");
+        assert_eq!(editor.cursor_position(), (0, 1));
+        
+        // j 下移
+        editor.handle_input("j");
+        assert_eq!(editor.cursor_position(), (1, 1));
+        
+        // k 上移
+        editor.handle_input("k");
+        assert_eq!(editor.cursor_position(), (0, 1));
+        
+        // h 左移
+        editor.handle_input("h");
+        assert_eq!(editor.cursor_position(), (0, 0));
+        
+        // w 词首
+        editor.handle_input("w");
+        assert_eq!(editor.cursor_position(), (0, 6)); // "World" 的 W
+        
+        // $ 行尾
+        editor.handle_input("$");
+        // 行尾最后一个字符
+        
+        // 0 行首
+        editor.handle_input("0");
+        assert_eq!(editor.cursor_position(), (0, 0));
+        
+        // G 文件尾
+        editor.handle_input("G");
+        assert_eq!(editor.cursor_position().0, 2); // 最后一行
+    }
+
+    #[test]
+    fn test_vim_scroll_half_page() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        let lines: Vec<&str> = (0..20).map(|_| "test line").collect();
+        editor.set_text(&lines.join("\n"));
+        
+        // 移到开头
+        editor.handle_input("g");
+        editor.handle_input("g");
+        
+        // Ctrl+D 半屏下滚
+        editor.handle_input("\x04");
+        assert!(editor.cursor_position().0 > 0);
+        
+        // Ctrl+U 半屏上滚
+        editor.handle_input("\x15");
+        assert_eq!(editor.cursor_position().0, 0);
+    }
+
+    // ========== Task 4: Command mode and Search tests ==========
+
+    #[test]
+    fn test_vim_command_mode_write() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("Hello World");
+
+        // 进入命令模式
+        editor.handle_input(":");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Command));
+
+        // 输入 w
+        editor.handle_input("w");
+        // 执行
+        editor.handle_input("\r");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Normal));
+    }
+
+    #[test]
+    fn test_vim_command_mode_quit() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("Test");
+
+        editor.handle_input(":");
+        editor.handle_input("q");
+        editor.handle_input("\r");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Normal));
+    }
+
+    #[test]
+    fn test_vim_search() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("Hello World Hello Rust");
+
+        // 移到开头
+        editor.handle_input("g");
+        editor.handle_input("g");
+        assert_eq!(editor.cursor_position(), (0, 0));
+
+        // 搜索 "World"
+        editor.handle_input("/");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Search));
+
+        editor.handle_input("W");
+        editor.handle_input("o");
+        editor.handle_input("r");
+        editor.handle_input("l");
+        editor.handle_input("d");
+        editor.handle_input("\r");
+
+        // 应该跳转到 "World" 的位置
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Normal));
+        assert_eq!(editor.cursor_position(), (0, 6));
+    }
+
+    #[test]
+    fn test_vim_search_next_prev() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("aaa bbb aaa ccc aaa");
+
+        // 移到开头
+        editor.handle_input("g");
+        editor.handle_input("g");
+
+        // 搜索 "aaa"
+        editor.handle_input("/");
+        editor.handle_input("a");
+        editor.handle_input("a");
+        editor.handle_input("a");
+        editor.handle_input("\r");
+
+        // 第一个匹配后的位置
+        let pos1 = editor.cursor_position();
+        assert_eq!(pos1, (0, 0)); // 第一个 "aaa" 在开头
+
+        // n 下一个
+        editor.handle_input("n");
+        let pos2 = editor.cursor_position();
+        assert_eq!(pos2, (0, 8)); // 第二个 "aaa" 在位置 8
+
+        // 再下一个
+        editor.handle_input("n");
+        let pos3 = editor.cursor_position();
+        assert_eq!(pos3, (0, 16)); // 第三个 "aaa" 在位置 16
+
+        // N 上一个
+        editor.handle_input("N");
+        let pos4 = editor.cursor_position();
+        assert_eq!(pos4, (0, 8)); // 回到第二个 "aaa"
+    }
+
+    #[test]
+    fn test_vim_command_mode_escape() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("Test");
+
+        // 进入命令模式
+        editor.handle_input(":");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Command));
+
+        // Escape 取消
+        editor.handle_input("\x1b");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Normal));
+    }
+
+    #[test]
+    fn test_vim_search_escape() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("Test");
+
+        // 进入搜索模式
+        editor.handle_input("/");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Search));
+
+        // Escape 取消
+        editor.handle_input("\x1b");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Normal));
+    }
+
+    #[test]
+    fn test_vim_command_mode_backspace() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("Test");
+
+        // 进入命令模式并输入
+        editor.handle_input(":");
+        editor.handle_input("w");
+        editor.handle_input("q");
+
+        // Backspace 删除字符
+        editor.handle_input("\x7f");
+
+        // 再输入
+        editor.handle_input("\r");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Normal));
+    }
+
+    #[test]
+    fn test_vim_search_backspace() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("Test content");
+
+        // 进入搜索模式并输入
+        editor.handle_input("/");
+        editor.handle_input("T");
+        editor.handle_input("e");
+        editor.handle_input("s");
+
+        // Backspace 删除字符
+        editor.handle_input("\x7f");
+
+        // 此时 search_input 为 "Te"
+        // 执行搜索，应该匹配 "Test" 的开头
+        editor.handle_input("\r");
+        assert_eq!(editor.cursor_position(), (0, 0));
+    }
+
+    #[test]
+    fn test_vim_visual_mode_select_and_delete() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("Hello World");
+        
+        // 移到开头
+        editor.handle_input("g");
+        editor.handle_input("g");
+        
+        // 进入 Visual 模式
+        editor.handle_input("v");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Visual));
+        
+        // 选择 "Hello"（向右移动 4 次，选择 H-e-l-l-o）
+        editor.handle_input("l");
+        editor.handle_input("l");
+        editor.handle_input("l");
+        editor.handle_input("l");
+        
+        // 删除
+        editor.handle_input("d");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Normal));
+        // "Hello" 被删除，剩下 " World"
+        assert_eq!(editor.get_text(), " World");
+    }
+
+    #[test]
+    fn test_vim_visual_line_mode() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("Line 1\nLine 2\nLine 3");
+        
+        // 移到开头
+        editor.handle_input("g");
+        editor.handle_input("g");
+        
+        // 进入 Visual Line 模式
+        editor.handle_input("V");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::VisualLine));
+        
+        // 选择两行（j 向下）
+        editor.handle_input("j");
+        
+        // 复制
+        editor.handle_input("y");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Normal));
+        // 文本不变
+        assert_eq!(editor.get_text(), "Line 1\nLine 2\nLine 3");
+    }
+
+    #[test]
+    fn test_vim_visual_indent() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("Line 1\nLine 2\nLine 3");
+        
+        // 移到开头
+        editor.handle_input("g");
+        editor.handle_input("g");
+        
+        // V 选择两行
+        editor.handle_input("V");
+        editor.handle_input("j");
+        
+        // 缩进
+        editor.handle_input(">");
+        
+        let text = editor.get_text();
+        assert!(text.starts_with("    Line 1"));
+        assert!(text.contains("    Line 2"));
+    }
+
+    #[test]
+    fn test_vim_visual_escape() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("Hello");
+        
+        // 移到开头
+        editor.handle_input("g");
+        editor.handle_input("g");
+        
+        // v 进入 Visual
+        editor.handle_input("v");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Visual));
+        
+        // Escape 退出
+        editor.handle_input("\x1b");
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Normal));
+    }
+
+    // ========== Task 6: 配置选项 + 状态栏 + 收尾测试 ==========
+
+    #[test]
+    fn test_vim_mode_config() {
+        // 默认 Emacs 模式
+        let editor = Editor::new(EditorConfig::default());
+        assert!(!editor.is_vim_mode());
+        assert_eq!(editor.vim_mode(), None);
+        
+        // Vim 模式
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let editor = Editor::new(config);
+        assert!(editor.is_vim_mode());
+        assert_eq!(editor.vim_mode(), Some(vim::VimMode::Normal));
+    }
+
+    #[test]
+    fn test_vim_mode_indicator() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        
+        // Normal 模式
+        let indicator = editor.get_vim_mode_indicator();
+        assert!(indicator.is_some());
+        assert!(indicator.unwrap().contains("NORMAL"));
+        
+        // Insert 模式
+        editor.handle_input("i");
+        let indicator = editor.get_vim_mode_indicator();
+        assert!(indicator.unwrap().contains("INSERT"));
+        
+        // 返回 Normal
+        editor.handle_input("\x1b");
+        let indicator = editor.get_vim_mode_indicator();
+        assert!(indicator.unwrap().contains("NORMAL"));
+    }
+
+    #[test]
+    fn test_vim_full_workflow() {
+        // 模拟完整编辑流程
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        
+        // 进入 Insert 模式输入文本
+        editor.handle_input("i");
+        editor.handle_input("H");
+        editor.handle_input("e");
+        editor.handle_input("l");
+        editor.handle_input("l");
+        editor.handle_input("o");
+        
+        // 回到 Normal
+        editor.handle_input("\x1b");
+        assert_eq!(editor.get_text(), "Hello");
+        
+        // yy 复制当前行
+        editor.handle_input("y");
+        editor.handle_input("y");
+        
+        // p 粘贴 - 在当前行下方粘贴
+        editor.handle_input("p");
+        assert_eq!(editor.line_count(), 2);
+        assert_eq!(editor.get_text(), "Hello\nHello");
+        
+        // u 撤销
+        editor.handle_input("u");
+        assert_eq!(editor.line_count(), 1);
+    }
+
+    #[test]
+    fn test_vim_emacs_mode_unchanged() {
+        // 确保 Emacs 模式完全不受影响
+        let mut editor = Editor::new(EditorConfig::default());
+        editor.insert_text("Hello World");
+        
+        // Ctrl+A 全选（Emacs）
+        editor.handle_input("\x01");
+        assert!(editor.get_selected_text().is_some());
+        
+        // Ctrl+K 删除到行尾（Emacs）
+        editor.set_text("Hello World");
+        editor.move_home();
+        editor.move_word_right();
+        editor.handle_input("\x0b");
+        assert_eq!(editor.get_text(), "Hello");
+    }
+
+    #[test]
+    fn test_vim_render_with_status() {
+        let config = EditorConfig {
+            editor_mode: EditorMode::Vim,
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config);
+        editor.set_text("Test content");
+        
+        let lines = editor.render(80);
+        // 应该包含状态栏行
+        assert!(lines.iter().any(|l| l.contains("NORMAL")));
+    }
 }

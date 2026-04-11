@@ -565,6 +565,51 @@ pub fn default_keybindings() -> KeybindingsConfig {
                 description: "Reset zoom".into(),
                 context: None,
             },
+            // Vim Normal 模式键位
+            KeybindingDefinition::new("h", "cursor_left", "Move cursor left")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("j", "cursor_down", "Move cursor down")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("k", "cursor_up", "Move cursor up")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("l", "cursor_right", "Move cursor right")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("i", "enter_insert", "Enter insert mode")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("a", "enter_insert_after", "Enter insert mode after cursor")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("o", "open_line_below", "Open line below")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("w", "word_forward", "Move to next word")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("b", "word_backward", "Move to previous word")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("e", "word_end", "Move to end of word")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("0", "line_start", "Move to line start")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("$", "line_end", "Move to line end")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("x", "delete_char", "Delete character")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("u", "undo", "Undo")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("p", "paste_after", "Paste after cursor")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("v", "enter_visual", "Enter visual mode")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new(":", "enter_command", "Enter command mode")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("/", "search", "Search")
+                .with_context("editor/vim/normal"),
+            KeybindingDefinition::new("n", "search_next", "Next search match")
+                .with_context("editor/vim/normal"),
+            // Vim Insert 模式键位
+            KeybindingDefinition::new("escape", "exit_mode", "Return to normal mode")
+                .with_context("editor/vim/insert"),
+            // Vim Visual 模式键位
+            KeybindingDefinition::new("escape", "exit_visual", "Exit visual mode")
+                .with_context("editor/vim/visual"),
         ],
     }
 }

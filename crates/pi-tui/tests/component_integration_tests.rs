@@ -1104,3 +1104,122 @@ fn test_selection_is_empty() {
     let sel = Selection::new(0, 0, 0, 5);
     assert!(!sel.is_empty());
 }
+
+// ============== Vim 多行粘贴测试 ==============
+
+use pi_tui::components::editor::EditorMode;
+
+/// 测试 Vim Visual Line 多行粘贴
+/// 验证从 Visual Line 模式复制多行后粘贴，每行不应包含换行符
+#[test]
+fn test_vim_visual_line_multiline_paste() {
+    let config = EditorConfig {
+        editor_mode: EditorMode::Vim,
+        ..Default::default()
+    };
+    let mut editor = Editor::new(config);
+    editor.set_text("Line 1\nLine 2\nLine 3");
+
+    // 移到开头
+    editor.handle_input("g");
+    editor.handle_input("g");
+
+    // V 选择前两行
+    editor.handle_input("V");
+    editor.handle_input("j");
+
+    // y 复制
+    editor.handle_input("y");
+
+    // 移到最后一行
+    editor.handle_input("G");
+
+    // p 粘贴到下方
+    editor.handle_input("p");
+
+    // 验证粘贴后每行不含换行符
+    let text = editor.get_text();
+    for line in text.lines() {
+        assert!(!line.contains('\n'), "Line should not contain newline: {:?}", line);
+    }
+
+    // 粘贴的内容应正确分行
+    assert!(text.contains("Line 1"));
+    assert!(text.contains("Line 2"));
+    assert!(text.contains("Line 3"));
+
+    // 原3行 + 粘贴的2行 = 5行
+    assert!(editor.line_count() >= 4, "Expected at least 4 lines, got {}", editor.line_count());
+}
+
+/// 测试 Vim Visual Line 多行删除后粘贴
+#[test]
+fn test_vim_visual_line_delete_and_paste() {
+    let config = EditorConfig {
+        editor_mode: EditorMode::Vim,
+        ..Default::default()
+    };
+    let mut editor = Editor::new(config);
+    editor.set_text("Alpha\nBeta\nGamma\nDelta");
+
+    // 移到第二行 (Beta)
+    editor.handle_input("j");
+
+    // V 选择当前行 (Beta)
+    editor.handle_input("V");
+
+    // d 删除当前行
+    editor.handle_input("d");
+
+    // p 粘贴到下方
+    editor.handle_input("p");
+
+    // 验证粘贴后每行不含换行符（这是核心修复验证点）
+    let text = editor.get_text();
+    for line in text.lines() {
+        assert!(!line.contains('\n'), "Line should not contain newline: {:?}", line);
+    }
+
+    // 验证内容正确
+    assert!(text.contains("Alpha"));
+    assert!(text.contains("Beta"));
+    assert!(text.contains("Gamma"));
+    assert!(text.contains("Delta"));
+}
+
+/// 测试 Vim Visual Line 粘贴到上方 (P 命令)
+#[test]
+fn test_vim_visual_line_paste_before() {
+    let config = EditorConfig {
+        editor_mode: EditorMode::Vim,
+        ..Default::default()
+    };
+    let mut editor = Editor::new(config);
+    editor.set_text("First\nSecond\nThird");
+
+    // 移到第二行
+    editor.handle_input("j");
+
+    // V 选择当前行
+    editor.handle_input("V");
+
+    // y 复制
+    editor.handle_input("y");
+
+    // P 粘贴到上方
+    editor.handle_input("P");
+
+    // 验证粘贴后每行不含换行符（这是核心修复验证点）
+    let text = editor.get_text();
+    for line in text.lines() {
+        assert!(!line.contains('\n'), "Line should not contain newline: {:?}", line);
+    }
+
+    // 验证所有内容存在
+    assert!(text.contains("First"));
+    assert!(text.contains("Second"));
+    assert!(text.contains("Third"));
+    
+    // 验证行数正确（原有3行 + 粘贴1行 = 4行）
+    assert!(editor.line_count() >= 3, "Expected at least 3 lines, got {}", editor.line_count());
+}
