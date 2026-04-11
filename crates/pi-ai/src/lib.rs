@@ -110,6 +110,15 @@ pub fn init_providers() {
     register_api_provider(Arc::new(providers::OpenRouterProvider::new()));
     register_api_provider(Arc::new(providers::GroqProvider::new()));
     register_api_provider(Arc::new(providers::CerebrasProvider::new()));
+    register_api_provider(Arc::new(providers::MinimaxProvider::new()));
+    register_api_provider(Arc::new(providers::HuggingfaceProvider::new()));
+    register_api_provider(Arc::new(providers::MoonshotProvider::new()));
+    register_api_provider(Arc::new(providers::OpencodeProvider::new()));
+    register_api_provider(Arc::new(providers::DeepSeekProvider::new()));
+    register_api_provider(Arc::new(providers::QwenProvider::new()));
+    register_api_provider(Arc::new(providers::VertexAiProvider::new()));
+    register_api_provider(Arc::new(providers::GeminiCliProvider::new()));
+    register_api_provider(Arc::new(providers::GithubCopilotProvider::new()));
 
-    tracing::debug!("Registered 10 built-in providers: Anthropic, OpenAI(ChatCompletions), Google, Mistral, Bedrock, AzureOpenAI, XAI, OpenRouter, Groq, Cerebras");
+    tracing::debug!("Registered 19 built-in providers: Anthropic, OpenAI(ChatCompletions), Google, Mistral, Bedrock, AzureOpenAI, XAI, OpenRouter, Groq, Cerebras, Minimax, Huggingface, Moonshot, Opencode, DeepSeek, Qwen, VertexAI, GeminiCli, GithubCopilot");
 }

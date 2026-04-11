@@ -10,4 +10,5 @@ pub mod keybindings_config;
 pub mod message_components;
 pub mod message_history;
 pub mod print_mode;
+pub mod settings;
 pub mod theme;

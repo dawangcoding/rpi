@@ -425,9 +425,9 @@ fn test_model_id_format() {
         // ID 应该只包含有效字符（允许字母、数字、连字符、下划线、点、冒号和斜杠）
         assert!(
             model.id.chars().all(|c| {
-                c.is_ascii_lowercase() || 
-                c.is_ascii_digit() || 
-                c == '-' || 
+                c.is_ascii_alphabetic() ||
+                c.is_ascii_digit() ||
+                c == '-' ||
                 c == '_' ||
                 c == '.' ||
                 c == ':' ||

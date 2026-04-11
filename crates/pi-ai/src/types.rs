@@ -55,6 +55,8 @@ pub enum Api {
     OpencodeGo,
     #[serde(rename = "kimi-coding")]
     KimiCoding,
+    DeepSeek,
+    Qwen,
     #[serde(untagged)]
     Other(String),
 }
@@ -99,6 +101,8 @@ pub enum Provider {
     OpencodeGo,
     #[serde(rename = "kimi-coding")]
     KimiCoding,
+    DeepSeek,
+    Qwen,
     #[serde(untagged)]
     Other(String),
 }

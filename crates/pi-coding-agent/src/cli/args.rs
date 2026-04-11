@@ -120,6 +120,30 @@ pub struct CliArgs {
     #[arg(long)]
     pub offline: bool,
 
+    /// Read prompt from file
+    #[arg(long = "input-file", short = 'I')]
+    pub input_file: Option<String>,
+
+    /// Write output to file
+    #[arg(long = "output-file", short = 'O')]
+    pub output_file: Option<String>,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+
+    /// Non-interactive batch processing mode
+    #[arg(long)]
+    pub batch: bool,
+
+    /// Start in RPC server mode
+    #[arg(long)]
+    pub rpc: bool,
+
+    /// RPC server port (default: 3100)
+    #[arg(long = "rpc-port", default_value = "3100")]
+    pub rpc_port: u16,
+
     // 注意：clap 自动生成 --help 和 --version，不需要显式定义
 }
 

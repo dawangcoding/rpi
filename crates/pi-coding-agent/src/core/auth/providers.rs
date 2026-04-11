@@ -58,13 +58,51 @@ pub fn get_oauth_provider(name: &str) -> Option<OAuthProviderConfig> {
                 ("prompt".to_string(), "consent".to_string()),
             ],
         }),
+        "azure-openai" => Some(OAuthProviderConfig {
+            name: "azure-openai".to_string(),
+            authorize_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize".to_string(),
+            token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token".to_string(),
+            client_id: "pi-coding-agent-azure".to_string(),
+            scopes: vec!["https://cognitiveservices.azure.com/.default".to_string()],
+            use_pkce: true,
+            extra_auth_params: vec![
+                ("response_mode".to_string(), "query".to_string()),
+            ],
+        }),
+        "mistral" => Some(OAuthProviderConfig {
+            name: "mistral".to_string(),
+            authorize_url: "https://auth.mistral.ai/oauth/authorize".to_string(),
+            token_url: "https://auth.mistral.ai/oauth/token".to_string(),
+            client_id: "pi-coding-agent-mistral".to_string(),
+            scopes: vec!["api".to_string()],
+            use_pkce: true,
+            extra_auth_params: vec![],
+        }),
+        "huggingface" => Some(OAuthProviderConfig {
+            name: "huggingface".to_string(),
+            authorize_url: "https://huggingface.co/oauth/authorize".to_string(),
+            token_url: "https://huggingface.co/oauth/token".to_string(),
+            client_id: "pi-coding-agent-hf".to_string(),
+            scopes: vec!["inference-api".to_string()],
+            use_pkce: true,
+            extra_auth_params: vec![],
+        }),
+        "openrouter" => Some(OAuthProviderConfig {
+            name: "openrouter".to_string(),
+            authorize_url: "https://openrouter.ai/auth".to_string(),
+            token_url: "https://openrouter.ai/api/v1/auth/keys".to_string(),
+            client_id: "pi-coding-agent-or".to_string(),
+            scopes: vec![],
+            use_pkce: false,
+            extra_auth_params: vec![],
+        }),
         _ => None,
     }
 }
 
 /// 列出所有支持的 OAuth 提供商
 pub fn list_oauth_providers() -> Vec<&'static str> {
-    vec!["anthropic", "github-copilot", "openai", "google"]
+    vec!["anthropic", "github-copilot", "openai", "google", "azure-openai", "mistral", "huggingface", "openrouter"]
 }
 
 #[cfg(test)]
@@ -112,6 +150,51 @@ mod tests {
     }
 
     #[test]
+    fn test_get_azure_openai_provider() {
+        let provider = get_oauth_provider("azure-openai");
+        assert!(provider.is_some());
+        let p = provider.unwrap();
+        assert_eq!(p.name, "azure-openai");
+        assert!(p.use_pkce);
+        assert!(!p.scopes.is_empty());
+        // Azure 应该有 extra_auth_params (response_mode)
+        assert!(!p.extra_auth_params.is_empty());
+        assert!(p.extra_auth_params.iter().any(|(k, v)| k == "response_mode" && v == "query"));
+    }
+
+    #[test]
+    fn test_get_mistral_provider() {
+        let provider = get_oauth_provider("mistral");
+        assert!(provider.is_some());
+        let p = provider.unwrap();
+        assert_eq!(p.name, "mistral");
+        assert!(p.use_pkce);
+        assert!(!p.scopes.is_empty());
+    }
+
+    #[test]
+    fn test_get_huggingface_provider() {
+        let provider = get_oauth_provider("huggingface");
+        assert!(provider.is_some());
+        let p = provider.unwrap();
+        assert_eq!(p.name, "huggingface");
+        assert!(p.use_pkce);
+        assert!(!p.scopes.is_empty());
+    }
+
+    #[test]
+    fn test_get_openrouter_provider() {
+        let provider = get_oauth_provider("openrouter");
+        assert!(provider.is_some());
+        let p = provider.unwrap();
+        assert_eq!(p.name, "openrouter");
+        // OpenRouter 不使用 PKCE
+        assert!(!p.use_pkce);
+        // OpenRouter 没有 scopes
+        assert!(p.scopes.is_empty());
+    }
+
+    #[test]
     fn test_get_unknown_provider() {
         let provider = get_oauth_provider("nonexistent");
         assert!(provider.is_none());
@@ -120,10 +203,14 @@ mod tests {
     #[test]
     fn test_list_oauth_providers() {
         let providers = list_oauth_providers();
-        assert!(providers.len() >= 4);
+        assert!(providers.len() >= 8);
         assert!(providers.contains(&"anthropic"));
         assert!(providers.contains(&"openai"));
         assert!(providers.contains(&"google"));
+        assert!(providers.contains(&"azure-openai"));
+        assert!(providers.contains(&"mistral"));
+        assert!(providers.contains(&"huggingface"));
+        assert!(providers.contains(&"openrouter"));
     }
 
     #[test]

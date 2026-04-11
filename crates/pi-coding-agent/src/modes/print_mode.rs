@@ -1,5 +1,5 @@
 //! 打印模式 - 非交互单次执行
-//!
+//
 //! 用于 `pi -p "prompt"` 或 `pi --mode print "prompt"`
 //! 执行单次 prompt 后退出
 
@@ -9,6 +9,58 @@ use pi_agent::types::*;
 use pi_ai::types::*;
 use crate::core::agent_session::{AgentSession, AgentSessionConfig};
 use crate::config::AppConfig;
+use serde::Serialize;
+
+/// 标准化退出码
+pub mod exit_codes {
+    /// 成功
+    pub const SUCCESS: i32 = 0;
+    /// 一般错误
+    pub const GENERAL_ERROR: i32 = 1;
+    /// 认证错误（API key 缺失或无效）
+    pub const AUTH_ERROR: i32 = 2;
+    /// 模型错误（模型不存在或不可用）
+    pub const MODEL_ERROR: i32 = 3;
+}
+
+/// JSON 输出格式
+#[derive(Debug, Serialize)]
+pub struct JsonOutput {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<JsonUsage>,
+    pub exit_code: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JsonUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// 将内容写入输出文件
+pub fn write_output_file(path: &str, content: &str) -> anyhow::Result<()> {
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+/// 从输入文件读取提示词
+pub fn read_input_file(path: &str) -> anyhow::Result<String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("Failed to read input file '{}': {}", path, e))?;
+    Ok(content.trim().to_string())
+}
+
+/// 格式化 JSON 输出
+pub fn format_json_output(output: &JsonOutput) -> anyhow::Result<String> {
+    Ok(serde_json::to_string_pretty(output)?)
+}
 
 /// 打印模式配置
 pub struct PrintConfig {
@@ -101,4 +153,71 @@ pub async fn run(config: PrintConfig) -> anyhow::Result<()> {
         stats.tokens.input, stats.tokens.output, stats.cost);
     
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_exit_codes() {
+        assert_eq!(exit_codes::SUCCESS, 0);
+        assert_eq!(exit_codes::GENERAL_ERROR, 1);
+        assert_eq!(exit_codes::AUTH_ERROR, 2);
+        assert_eq!(exit_codes::MODEL_ERROR, 3);
+    }
+
+    #[test]
+    fn test_json_output_success() {
+        let output = JsonOutput {
+            success: true,
+            content: Some("Hello world".to_string()),
+            error: None,
+            model: Some("gpt-4o".to_string()),
+            usage: Some(JsonUsage { input_tokens: 10, output_tokens: 20 }),
+            exit_code: exit_codes::SUCCESS,
+        };
+        let json = format_json_output(&output).unwrap();
+        assert!(json.contains("\"success\": true"));
+        assert!(json.contains("Hello world"));
+        assert!(!json.contains("error")); // error 为 None 应被跳过
+    }
+
+    #[test]
+    fn test_json_output_error() {
+        let output = JsonOutput {
+            success: false,
+            content: None,
+            error: Some("API key not found".to_string()),
+            model: None,
+            usage: None,
+            exit_code: exit_codes::AUTH_ERROR,
+        };
+        let json = format_json_output(&output).unwrap();
+        assert!(json.contains("\"success\": false"));
+        assert!(json.contains("API key not found"));
+    }
+
+    #[test]
+    fn test_read_input_file() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(temp.path(), "  Hello from file  \n").unwrap();
+        let content = read_input_file(temp.path().to_str().unwrap()).unwrap();
+        assert_eq!(content, "Hello from file");
+    }
+
+    #[test]
+    fn test_read_input_file_not_found() {
+        let result = read_input_file("/nonexistent/file.txt");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_write_output_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_path = temp_dir.path().join("output.txt");
+        write_output_file(output_path.to_str().unwrap(), "Test output").unwrap();
+        let content = std::fs::read_to_string(&output_path).unwrap();
+        assert_eq!(content, "Test output");
+    }
 }

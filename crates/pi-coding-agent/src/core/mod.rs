@@ -11,4 +11,5 @@ pub mod export;
 pub mod compaction;
 pub mod auth;
 pub mod extensions;
+pub mod skills;
 

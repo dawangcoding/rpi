@@ -2,6 +2,7 @@
 //!
 //! 管理应用配置，包括 API keys、默认模型、会话目录等
 
+use notify::Watcher;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -317,4 +318,86 @@ pub fn ensure_dir(path: &Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(path)?;
     }
     Ok(())
+}
+
+/// 配置变更事件
+#[derive(Debug, Clone)]
+pub enum ConfigChangeEvent {
+    /// 配置文件已更新
+    Updated,
+    /// 配置文件更新失败（保持原配置）
+    Error(String),
+}
+
+/// 配置文件监控器
+pub struct ConfigWatcher {
+    _watcher: notify::RecommendedWatcher,
+    event_rx: tokio::sync::mpsc::Receiver<ConfigChangeEvent>,
+}
+
+impl ConfigWatcher {
+    /// 创建并启动配置文件监控
+    pub fn new(config_path: std::path::PathBuf) -> anyhow::Result<Self> {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
+
+        let tx = event_tx.clone();
+        let path = config_path.clone();
+        let mut watcher = notify::recommended_watcher(
+            move |res: Result<notify::Event, notify::Error>| {
+                match res {
+                    Ok(event) => {
+                        if matches!(
+                            event.kind,
+                            notify::EventKind::Modify(_)
+                                | notify::EventKind::Create(_)
+                        ) {
+                            // 验证配置文件可读
+                            match std::fs::read_to_string(&path) {
+                                Ok(content) => {
+                                    // 尝试解析以验证格式
+                                    let valid = serde_yaml::from_str::<serde_json::Value>(&content)
+                                        .is_ok()
+                                        || serde_json::from_str::<serde_json::Value>(&content)
+                                            .is_ok()
+                                        || toml::from_str::<serde_json::Value>(&content).is_ok();
+
+                                    if valid {
+                                        let _ = tx.blocking_send(ConfigChangeEvent::Updated);
+                                    } else {
+                                        let _ = tx.blocking_send(ConfigChangeEvent::Error(
+                                            "Invalid config format, keeping current config"
+                                                .to_string(),
+                                        ));
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = tx.blocking_send(ConfigChangeEvent::Error(
+                                        format!("Failed to read config: {}", e),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Config watch error: {}", e);
+                    }
+                }
+            },
+        )?;
+
+        // 监控配置文件的父目录
+        if let Some(parent) = config_path.parent() {
+            watcher.watch(parent, notify::RecursiveMode::NonRecursive)?;
+        }
+
+        Ok(Self {
+            _watcher: watcher,
+            event_rx,
+        })
+    }
+
+    /// 接收下一个配置变更事件
+    pub async fn next_event(&mut self) -> Option<ConfigChangeEvent> {
+        self.event_rx.recv().await
+    }
 }

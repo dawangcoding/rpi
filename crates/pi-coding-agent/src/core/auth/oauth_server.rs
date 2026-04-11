@@ -223,6 +223,140 @@ fn open_browser(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// Device Code Flow 响应
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    expires_in: u64,
+    interval: Option<u64>,
+}
+
+/// Token 轮询响应
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TokenPollResponse {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    expires_in: Option<u64>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+/// 运行 Device Code Flow 授权
+/// 
+/// 用于不支持浏览器重定向的场景（如 GitHub Copilot）。
+/// 流程：
+/// 1. POST 到 authorize_url 获取 device_code 和 user_code
+/// 2. 提示用户访问验证 URL 并输入 user_code
+/// 3. 轮询 token_url 直到授权完成或超时
+/// 4. 存储 token
+pub async fn run_device_code_flow(
+    provider_config: &OAuthProviderConfig,
+    token_storage: &TokenStorage,
+) -> Result<StoredToken> {
+    let client = reqwest::Client::new();
+    
+    // 1. 获取 device_code
+    let mut params: Vec<(&str, String)> = vec![
+        ("client_id", provider_config.client_id.clone()),
+    ];
+    
+    if !provider_config.scopes.is_empty() {
+        params.push(("scope", provider_config.scopes.join(" ")));
+    }
+    
+    let device_resp = client.post(&provider_config.authorize_url)
+        .form(&params)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .context("Failed to request device code")?;
+    
+    let device_data: DeviceCodeResponse = device_resp.json().await
+        .context("Failed to parse device code response")?;
+    
+    // 2. 提示用户
+    println!("\n请在浏览器中打开以下 URL：");
+    println!("  {}", device_data.verification_uri);
+    println!("\n然后输入以下代码：");
+    println!("  {}", device_data.user_code);
+    println!("\n此代码将在 {} 秒后过期。", device_data.expires_in);
+    
+    // 自动打开浏览器
+    let _ = open_browser(&device_data.verification_uri);
+    
+    // 3. 轮询等待授权
+    let interval = device_data.interval.unwrap_or(5);
+    let start_time = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(device_data.expires_in);
+    
+    let access_token = loop {
+        // 检查超时
+        if start_time.elapsed() >= timeout {
+            anyhow::bail!("Device code authorization timed out");
+        }
+        
+        // 等待轮询间隔
+        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+        
+        // 轮询 token 端点
+        let token_resp = client.post(&provider_config.token_url)
+            .form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("device_code", &device_data.device_code),
+                ("client_id", &provider_config.client_id),
+            ])
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("Failed to poll for token")?;
+        
+        let token_data: TokenPollResponse = token_resp.json().await
+            .context("Failed to parse token poll response")?;
+        
+        match token_data.error {
+            Some(e) if e == "authorization_pending" => {
+                // 用户尚未完成授权，继续等待
+                tracing::debug!("Authorization pending, waiting...");
+                continue;
+            }
+            Some(e) if e == "slow_down" => {
+                // 需要减慢轮询频率
+                tracing::warn!("Received slow_down, increasing interval");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                continue;
+            }
+            Some(e) => {
+                // 其他错误
+                anyhow::bail!(
+                    "Device authorization failed: {} - {}",
+                    e,
+                    token_data.error_description.unwrap_or_default()
+                );
+            }
+            None => {
+                // 成功获取 token
+                break token_data.access_token.context("No access_token in response")?;
+            }
+        }
+    };
+    
+    // 4. 存储 token
+    let stored_token = StoredToken {
+        provider: provider_config.name.clone(),
+        access_token,
+        refresh_token: None, // Device Code Flow 通常不返回 refresh_token
+        expires_at: None,    // Device Code Flow 通常不返回 expires_in
+    };
+    
+    token_storage.save_token(&stored_token)?;
+    
+    println!("\n✓ 已成功登录 {}", provider_config.name);
+    
+    Ok(stored_token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,5 +442,88 @@ mod tests {
     fn test_urlencoding_encode_special_chars() {
         let encoded = urlencoding_encode("a&b=c");
         assert!(encoded.contains("%26") || encoded.contains("%3D"));
+    }
+
+    // ========== Device Code Flow 测试 ==========
+
+    #[test]
+    fn test_device_code_response_deserialize() {
+        let json = r#"{
+            "device_code": "test_device_code",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://github.com/login/device",
+            "expires_in": 900,
+            "interval": 5
+        }"#;
+        
+        let resp: DeviceCodeResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.device_code, "test_device_code");
+        assert_eq!(resp.user_code, "ABCD-1234");
+        assert_eq!(resp.verification_uri, "https://github.com/login/device");
+        assert_eq!(resp.expires_in, 900);
+        assert_eq!(resp.interval, Some(5));
+    }
+
+    #[test]
+    fn test_device_code_response_without_interval() {
+        let json = r#"{
+            "device_code": "test_device_code",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://github.com/login/device",
+            "expires_in": 900
+        }"#;
+        
+        let resp: DeviceCodeResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.interval, None);
+    }
+
+    #[test]
+    fn test_token_poll_response_success() {
+        let json = r#"{
+            "access_token": "test_access_token",
+            "refresh_token": "test_refresh_token",
+            "expires_in": 3600
+        }"#;
+        
+        let resp: TokenPollResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.access_token, Some("test_access_token".to_string()));
+        assert_eq!(resp.refresh_token, Some("test_refresh_token".to_string()));
+        assert_eq!(resp.expires_in, Some(3600));
+        assert_eq!(resp.error, None);
+    }
+
+    #[test]
+    fn test_token_poll_response_pending() {
+        let json = r#"{
+            "error": "authorization_pending",
+            "error_description": "User has not yet completed authorization"
+        }"#;
+        
+        let resp: TokenPollResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.error, Some("authorization_pending".to_string()));
+        assert!(resp.access_token.is_none());
+    }
+
+    #[test]
+    fn test_token_poll_response_slow_down() {
+        let json = r#"{
+            "error": "slow_down",
+            "error_description": "Polling too frequently"
+        }"#;
+        
+        let resp: TokenPollResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.error, Some("slow_down".to_string()));
+    }
+
+    #[test]
+    fn test_token_poll_response_access_denied() {
+        let json = r#"{
+            "error": "access_denied",
+            "error_description": "User denied access"
+        }"#;
+        
+        let resp: TokenPollResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.error, Some("access_denied".to_string()));
+        assert_eq!(resp.error_description, Some("User denied access".to_string()));
     }
 }

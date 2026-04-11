@@ -1,3 +1,53 @@
+/// Token 刷新错误类型
+#[derive(Debug, Clone)]
+pub enum RefreshError {
+    /// 网络错误（可重试）
+    NetworkError(String),
+    /// 认证错误（需要重新登录）
+    AuthError(String),
+    /// 其他错误
+    Other(String),
+}
+
+impl std::fmt::Display for RefreshError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RefreshError::NetworkError(msg) => write!(f, "Network error: {}", msg),
+            RefreshError::AuthError(msg) => write!(f, "Authentication error: {}", msg),
+            RefreshError::Other(msg) => write!(f, "Error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for RefreshError {}
+
+impl RefreshError {
+    /// 从响应状态码判断错误类型
+    pub fn from_response(status: reqwest::StatusCode, body: Option<&str>) -> Self {
+        match status.as_u16() {
+            400 | 401 | 403 => RefreshError::AuthError(
+                body.unwrap_or("Authentication failed").to_string()
+            ),
+            429 => RefreshError::NetworkError("Rate limited".to_string()),
+            500..=599 => RefreshError::NetworkError(
+                format!("Server error: {}", status)
+            ),
+            _ => RefreshError::Other(format!("HTTP {}: {}", status, body.unwrap_or(""))),
+        }
+    }
+    
+    /// 判断是否可重试
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, RefreshError::NetworkError(_))
+    }
+    
+    /// 判断是否需要重新登录
+    pub fn requires_relogin(&self) -> bool {
+        matches!(self, RefreshError::AuthError(_))
+    }
+}
+
+
 use anyhow::{Result, Context};
 use base64::Engine;
 use chrono::{DateTime, Utc};
@@ -8,6 +58,17 @@ use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
+
+/// 当前 Token 存储版本
+const CURRENT_TOKEN_VERSION: u32 = 2;
+
+/// Token 存储的版本化包装
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VersionedTokenData {
+    version: u32,
+    #[serde(flatten)]
+    data: serde_json::Value,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredToken {
@@ -61,11 +122,60 @@ pub(crate) trait SecureStorage: Send + Sync {
 /// 系统密钥链存储（macOS Keychain / Linux Secret Service / Windows Credential Manager）
 struct KeychainStorage {
     service_name: String,
+    /// 独立的索引文件路径，用于追踪已存储的 provider
+    index_path: PathBuf,
 }
 
 impl KeychainStorage {
     fn new() -> Self {
-        Self { service_name: "pi-cli-auth".to_string() }
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let index_path = home.join(".pi").join("auth").join("keychain_index.json");
+        Self { 
+            service_name: "pi-cli-auth".to_string(),
+            index_path,
+        }
+    }
+    
+    /// 更新索引文件
+    fn update_index(&self, keys: &[String]) -> Result<()> {
+        // 确保目录存在
+        if let Some(parent) = self.index_path.parent() {
+            std::fs::create_dir_all(parent)
+                .context("Failed to create index directory")?;
+        }
+        let content = serde_json::to_string_pretty(keys)
+            .context("Failed to serialize index")?;
+        std::fs::write(&self.index_path, content)
+            .context("Failed to write index file")?;
+        Ok(())
+    }
+    
+    /// 从索引文件读取
+    fn read_index(&self) -> Vec<String> {
+        match std::fs::read_to_string(&self.index_path) {
+            Ok(content) => {
+                serde_json::from_str(&content).unwrap_or_default()
+            }
+            Err(_) => vec![],
+        }
+    }
+    
+    /// 向索引添加 key
+    fn add_to_index(&self, key: &str) -> Result<()> {
+        let mut keys = self.read_index();
+        if !keys.contains(&key.to_string()) {
+            keys.push(key.to_string());
+            self.update_index(&keys)?;
+        }
+        Ok(())
+    }
+    
+    /// 从索引移除 key
+    fn remove_from_index(&self, key: &str) -> Result<()> {
+        let mut keys = self.read_index();
+        keys.retain(|k| k != key);
+        self.update_index(&keys)?;
+        Ok(())
     }
     
     fn is_available() -> bool {
@@ -73,10 +183,22 @@ impl KeychainStorage {
         let entry = keyring::Entry::new("pi-cli-auth-test", "availability-check");
         entry.is_ok()
     }
-}
-
-impl SecureStorage for KeychainStorage {
-    fn save(&self, key: &str, data: &[u8]) -> Result<()> {
+    
+    /// 健康检查 - 验证 keychain 可以正常读写
+    fn health_check(&self) -> bool {
+        let test_key = "__health_check__";
+        let test_data = b"health_check_ok";
+        if self.save_raw(test_key, test_data).is_ok() {
+            let result = self.load_raw(test_key).ok().flatten();
+            let _ = self.delete_raw(test_key);
+            result.as_deref() == Some(test_data.as_slice())
+        } else {
+            false
+        }
+    }
+    
+    /// 内部 save 方法（不更新索引）
+    fn save_raw(&self, key: &str, data: &[u8]) -> Result<()> {
         let entry = keyring::Entry::new(&self.service_name, key)
             .context("Failed to create keychain entry")?;
         let encoded = base64::engine::general_purpose::STANDARD.encode(data);
@@ -85,7 +207,8 @@ impl SecureStorage for KeychainStorage {
         Ok(())
     }
     
-    fn load(&self, key: &str) -> Result<Option<Vec<u8>>> {
+    /// 内部 load 方法
+    fn load_raw(&self, key: &str) -> Result<Option<Vec<u8>>> {
         let entry = keyring::Entry::new(&self.service_name, key)
             .context("Failed to create keychain entry")?;
         match entry.get_password() {
@@ -99,7 +222,8 @@ impl SecureStorage for KeychainStorage {
         }
     }
     
-    fn delete(&self, key: &str) -> Result<()> {
+    /// 内部 delete 方法（不更新索引）
+    fn delete_raw(&self, key: &str) -> Result<()> {
         let entry = keyring::Entry::new(&self.service_name, key)
             .context("Failed to create keychain entry")?;
         match entry.delete_credential() {
@@ -108,17 +232,30 @@ impl SecureStorage for KeychainStorage {
             Err(e) => Err(anyhow::anyhow!("Keychain delete error: {}", e)),
         }
     }
+}
+
+impl SecureStorage for KeychainStorage {
+    fn save(&self, key: &str, data: &[u8]) -> Result<()> {
+        self.save_raw(key, data)?;
+        // 成功后更新索引文件
+        self.add_to_index(key)?;
+        Ok(())
+    }
+    
+    fn load(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.load_raw(key)
+    }
+    
+    fn delete(&self, key: &str) -> Result<()> {
+        self.delete_raw(key)?;
+        // 成功后从索引中移除
+        self.remove_from_index(key)?;
+        Ok(())
+    }
     
     fn list_keys(&self) -> Result<Vec<String>> {
-        // keyring crate 不直接支持列出所有 key
-        // 使用一个索引 key 来追踪已存储的 provider 列表
-        match self.load("__provider_index__")? {
-            Some(data) => {
-                let index: Vec<String> = serde_json::from_slice(&data)?;
-                Ok(index)
-            }
-            None => Ok(vec![]),
-        }
+        // 从独立索引文件读取
+        Ok(self.read_index())
     }
 }
 
@@ -126,13 +263,13 @@ use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use aes_gcm::aead::Aead;
 use argon2::Argon2;
 
-struct EncryptedFileStorage {
+pub(crate) struct EncryptedFileStorage {
     storage_dir: PathBuf,
     encryption_key: [u8; 32],
 }
 
 impl EncryptedFileStorage {
-    fn new(storage_dir: PathBuf) -> Result<Self> {
+    pub(crate) fn new(storage_dir: PathBuf) -> Result<Self> {
         let machine_id = Self::get_machine_id()?;
         let salt = b"pi-cli-token-storage-salt";
         let mut key = [0u8; 32];
@@ -275,8 +412,25 @@ impl TokenStorage {
         
         // 尝试使用 Keychain，失败则回退到加密文件
         let storage: Box<dyn SecureStorage> = if KeychainStorage::is_available() {
-            Box::new(KeychainStorage::new())
+            let keychain = KeychainStorage::new();
+            // 进行更可靠的健康检查
+            if keychain.health_check() {
+                tracing::info!("Using system keychain for secure token storage");
+                Box::new(keychain)
+            } else {
+                tracing::warn!("System keychain health check failed, falling back to encrypted file storage");
+                let encrypted_dir = auth_dir.join("encrypted");
+                match EncryptedFileStorage::new(encrypted_dir) {
+                    Ok(s) => Box::new(s),
+                    Err(e) => {
+                        tracing::error!("Failed to initialize encrypted file storage: {}", e);
+                        // 最终回退：重试 keychain（至少还能用）
+                        Box::new(keychain)
+                    }
+                }
+            }
         } else {
+            tracing::warn!("System keychain not available, falling back to encrypted file storage");
             let encrypted_dir = auth_dir.join("encrypted");
             match EncryptedFileStorage::new(encrypted_dir) {
                 Ok(s) => Box::new(s),
@@ -337,19 +491,61 @@ impl TokenStorage {
         Ok(())
     }
     
-    /// 保存 token
+    /// 保存 token（带版本化）
     pub fn save_token(&self, token: &StoredToken) -> Result<()> {
-        let data = serde_json::to_vec(token)?;
+        // 包装为版本化格式
+        let token_value = serde_json::to_value(token)?;
+        let versioned = VersionedTokenData {
+            version: CURRENT_TOKEN_VERSION,
+            data: token_value,
+        };
+        let data = serde_json::to_vec(&versioned)?;
         self.storage.save(&token.provider, &data)?;
         // 如果是 Keychain，更新索引
         self.update_provider_index()?;
         Ok(())
     }
     
-    /// 获取指定 provider 的 token
+    /// 获取指定 provider 的 token（支持版本迁移）
     pub fn get_token(&self, provider: &str) -> Option<StoredToken> {
         match self.storage.load(provider) {
-            Ok(Some(data)) => serde_json::from_slice(&data).ok(),
+            Ok(Some(data)) => {
+                // 尝试解析为版本化格式
+                if let Ok(versioned) = serde_json::from_slice::<VersionedTokenData>(&data) {
+                    // 检查版本并迁移
+                    match versioned.version {
+                        CURRENT_TOKEN_VERSION => {
+                            // 当前版本，直接解析
+                            serde_json::from_value(versioned.data).ok()
+                        }
+                        1 => {
+                            // v1 格式迁移
+                            let token: StoredToken = serde_json::from_value(versioned.data).ok()?;
+                            // 自动升级存储格式
+                            if let Err(e) = self.save_token(&token) {
+                                tracing::warn!("Failed to migrate token to v2: {}", e);
+                            }
+                            Some(token)
+                        }
+                        _ => {
+                            tracing::warn!("Unknown token version: {}", versioned.version);
+                            // 尝试直接解析
+                            serde_json::from_value(versioned.data).ok()
+                        }
+                    }
+                } else {
+                    // 没有 version 字段，视为 v1 格式（旧格式直接是 StoredToken）
+                    if let Ok(token) = serde_json::from_slice::<StoredToken>(&data) {
+                        // 自动迁移到 v2
+                        if let Err(e) = self.save_token(&token) {
+                            tracing::warn!("Failed to migrate token to v2: {}", e);
+                        }
+                        Some(token)
+                    } else {
+                        None
+                    }
+                }
+            }
             _ => None,
         }
     }
@@ -428,10 +624,78 @@ impl TokenStorage {
             ])
             .send()
             .await
-            .context("Failed to refresh token")?;
+            .map_err(|e| {
+                // 区分网络错误
+                if e.is_connect() || e.is_timeout() {
+                    anyhow::anyhow!("Network error during token refresh for '{}': {}", provider, e)
+                } else if e.is_request() {
+                    anyhow::anyhow!("Request error during token refresh for '{}': {}", provider, e)
+                } else {
+                    anyhow::anyhow!("Failed to send refresh request for '{}': {}", provider, e)
+                }
+            })?;
+        
+        // 检查 HTTP 状态码
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            let error = RefreshError::from_response(status, Some(&body));
+            
+            // 根据错误类型提供更详细的错误信息
+            match error {
+                RefreshError::AuthError(_) => {
+                    tracing::error!(
+                        provider = %provider,
+                        status = %status,
+                        body = %body,
+                        "Authentication error during token refresh - re-login required"
+                    );
+                    anyhow::bail!(
+                        "Authentication error for '{}': {}. Please run '/login {}' to re-authenticate.",
+                        provider, error, provider
+                    );
+                }
+                RefreshError::NetworkError(_) => {
+                    tracing::warn!(
+                        provider = %provider,
+                        status = %status,
+                        "Network error during token refresh - will retry"
+                    );
+                    anyhow::bail!(
+                        "Network error for '{}': {}. This may be temporary.",
+                        provider, error
+                    );
+                }
+                RefreshError::Other(_) => {
+                    anyhow::bail!(
+                        "Token refresh failed for '{}': {}",
+                        provider, error
+                    );
+                }
+            }
+        }
         
         let token_response: serde_json::Value = resp.json().await
             .context("Failed to parse refresh response")?;
+        
+        // 检查响应中是否包含错误
+        if let Some(error) = token_response.get("error") {
+            let error_desc = token_response.get("error_description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error");
+            
+            tracing::error!(
+                provider = %provider,
+                error = %error,
+                description = %error_desc,
+                "OAuth error in refresh response"
+            );
+            
+            anyhow::bail!(
+                "OAuth error for '{}': {} - {}",
+                provider, error, error_desc
+            );
+        }
         
         let new_token = StoredToken {
             provider: provider.to_string(),
@@ -449,6 +713,11 @@ impl TokenStorage {
         };
         
         self.save_token(&new_token)?;
+        tracing::info!(
+            provider = %provider,
+            expires_at = ?new_token.expires_at,
+            "Token refreshed successfully"
+        );
         Ok(new_token)
     }
 
@@ -465,6 +734,10 @@ impl TokenStorage {
     /// 并发保护：
     /// - 使用 provider 级别的锁，确保同一 provider 的并发刷新请求只触发一次实际刷新
     /// - 其他请求会等待刷新完成后直接读取新 token
+    /// 
+    /// 错误恢复：
+    /// - 网络错误：使用旧 token（如果未过期）或返回 None
+    /// - 认证错误：返回 None，提示用户重新登录
     pub async fn get_valid_token_or_refresh(
         &self,
         provider: &str,
@@ -494,14 +767,70 @@ impl TokenStorage {
                     return Some(new_token.access_token);
                 }
                 Err(e) => {
-                    tracing::warn!("Token refresh failed for provider '{}': {}", provider, e);
+                    let error_msg = e.to_string();
+                    
+                    // 判断错误类型
+                    let is_auth_error = error_msg.contains("Authentication error") 
+                        || error_msg.contains("OAuth error");
+                    let is_network_error = error_msg.contains("Network error") 
+                        || error_msg.contains("timeout") 
+                        || error_msg.contains("connect");
+                    
+                    if is_auth_error {
+                        // 认证错误 - 需要重新登录
+                        tracing::error!(
+                            provider = %provider,
+                            error = %error_msg,
+                            "Authentication error during token refresh - re-login required"
+                        );
+                        tracing::warn!(
+                            "Token refresh failed for provider '{}'. Please run '/login {}' to re-authenticate.",
+                            provider, provider
+                        );
+                        return None;
+                    }
+                    
+                    if is_network_error {
+                        // 网络错误 - 尝试使用旧 token
+                        tracing::warn!(
+                            provider = %provider,
+                            error = %error_msg,
+                            "Network error during token refresh"
+                        );
+                        if !token.is_expired() {
+                            tracing::info!(
+                                provider = %provider,
+                                "Using existing token despite refresh failure (network issue)"
+                            );
+                            return Some(token.access_token.clone());
+                        }
+                        tracing::warn!(
+                            "Token refresh failed due to network issues for provider '{}'. Token may be expired.",
+                            provider
+                        );
+                        return None;
+                    }
+                    
+                    // 其他错误
+                    tracing::warn!(
+                        provider = %provider,
+                        error = %error_msg,
+                        "Token refresh failed"
+                    );
                     // 刷新失败但 token 可能还没完全过期
                     if !token.is_expired() {
-                        tracing::info!("Using existing token for '{}' (expires soon)", provider);
+                        tracing::info!(
+                            provider = %provider,
+                            "Using existing token for '{}' (expires soon, refresh failed)",
+                            provider
+                        );
                         return Some(token.access_token.clone());
                     }
-                    // Token 已过期且刷新失败 - 记录警告日志提示用户重新登录
-                    tracing::warn!("Token refresh failed for provider '{}'. Please run '/login {}' to re-authenticate.", provider, provider);
+                    // Token 已过期且刷新失败
+                    tracing::warn!(
+                        "Token refresh failed for provider '{}'. Please run '/login {}' to re-authenticate.",
+                        provider, provider
+                    );
                     return None;
                 }
             }
@@ -883,5 +1212,362 @@ mod tests {
         
         // 验证了两次请求（原始请求 + 1次重试）
         assert_eq!(REQUEST_COUNT.load(Ordering::SeqCst), 2);
+    }
+
+    // ========== RefreshError 测试 ==========
+
+    #[test]
+    fn test_refresh_error_display() {
+        let err = RefreshError::NetworkError("connection timeout".to_string());
+        assert!(err.to_string().contains("Network error"));
+        
+        let err = RefreshError::AuthError("invalid token".to_string());
+        assert!(err.to_string().contains("Authentication error"));
+        
+        let err = RefreshError::Other("unknown".to_string());
+        assert!(err.to_string().contains("Error"));
+    }
+
+    #[test]
+    fn test_refresh_error_is_retryable() {
+        let err = RefreshError::NetworkError("timeout".to_string());
+        assert!(err.is_retryable());
+        
+        let err = RefreshError::AuthError("invalid".to_string());
+        assert!(!err.is_retryable());
+        
+        let err = RefreshError::Other("unknown".to_string());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_refresh_error_requires_relogin() {
+        let err = RefreshError::AuthError("invalid token".to_string());
+        assert!(err.requires_relogin());
+        
+        let err = RefreshError::NetworkError("timeout".to_string());
+        assert!(!err.requires_relogin());
+        
+        let err = RefreshError::Other("unknown".to_string());
+        assert!(!err.requires_relogin());
+    }
+
+    #[test]
+    fn test_refresh_error_from_response_auth() {
+        let err = RefreshError::from_response(
+            reqwest::StatusCode::UNAUTHORIZED,
+            Some("invalid_token"),
+        );
+        assert!(err.requires_relogin());
+        assert!(!err.is_retryable());
+        
+        let err = RefreshError::from_response(
+            reqwest::StatusCode::FORBIDDEN,
+            Some("access denied"),
+        );
+        assert!(err.requires_relogin());
+    }
+
+    #[test]
+    fn test_refresh_error_from_response_network() {
+        let err = RefreshError::from_response(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            None,
+        );
+        assert!(err.is_retryable());
+        assert!(!err.requires_relogin());
+        
+        let err = RefreshError::from_response(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            None,
+        );
+        assert!(err.is_retryable());
+        
+        let err = RefreshError::from_response(
+            reqwest::StatusCode::BAD_GATEWAY,
+            None,
+        );
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_refresh_error_from_response_other() {
+        let err = RefreshError::from_response(
+            reqwest::StatusCode::NOT_FOUND,
+            Some("not found"),
+        );
+        assert!(!err.is_retryable());
+        assert!(!err.requires_relogin());
+    }
+
+    // ========== 版本化 Token 测试 ==========
+
+    #[test]
+    fn test_versioned_token_save_load() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = EncryptedFileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+        let token_storage = TokenStorage::with_storage(Box::new(storage));
+
+        let token = StoredToken {
+            provider: "test_provider".to_string(),
+            access_token: "test_access_token".to_string(),
+            refresh_token: Some("test_refresh_token".to_string()),
+            expires_at: Some(Utc::now() + Duration::hours(1)),
+        };
+        token_storage.save_token(&token).unwrap();
+
+        // 读取并验证版本化格式
+        let retrieved = token_storage.get_token("test_provider");
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.provider, "test_provider");
+        assert_eq!(retrieved.access_token, "test_access_token");
+        assert_eq!(retrieved.refresh_token, Some("test_refresh_token".to_string()));
+    }
+
+    #[test]
+    fn test_version_migration_v1_to_v2() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = EncryptedFileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+
+        // 模拟 v1 格式数据（直接 StoredToken JSON，没有 version 字段）
+        let v1_token = StoredToken {
+            provider: "v1_provider".to_string(),
+            access_token: "v1_access_token".to_string(),
+            refresh_token: Some("v1_refresh_token".to_string()),
+            expires_at: Some(Utc::now() + Duration::hours(1)),
+        };
+        let v1_data = serde_json::to_vec(&v1_token).unwrap();
+        
+        // 直接存储 v1 格式（绕过 save_token 的版本化）
+        storage.save("v1_provider", &v1_data).unwrap();
+
+        // 创建 TokenStorage（使用同一个存储目录的新实例）
+        let token_storage = TokenStorage::with_storage(Box::new(
+            EncryptedFileStorage::new(temp_dir.path().to_path_buf()).unwrap()
+        ));
+
+        // 使用 get_token 读取，应该自动迁移
+        let retrieved = token_storage.get_token("v1_provider");
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.provider, "v1_provider");
+        assert_eq!(retrieved.access_token, "v1_access_token");
+
+        // 再次读取，验证已被迁移为 v2 格式
+        let raw_data = storage.load("v1_provider").unwrap().unwrap();
+        let versioned: VersionedTokenData = serde_json::from_slice(&raw_data).unwrap();
+        assert_eq!(versioned.version, CURRENT_TOKEN_VERSION);
+    }
+
+    #[test]
+    fn test_version_migration_with_version_field() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = EncryptedFileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+
+        // 模拟带 version 字段的 v1 格式
+        let v1_token = serde_json::json!({
+            "provider": "v1_explicit",
+            "access_token": "v1_explicit_token",
+            "refresh_token": "v1_refresh",
+            "expires_at": "2025-01-01T00:00:00Z"
+        });
+        let versioned_v1 = VersionedTokenData {
+            version: 1,
+            data: v1_token,
+        };
+        let v1_data = serde_json::to_vec(&versioned_v1).unwrap();
+        
+        // 直接存储
+        storage.save("v1_explicit", &v1_data).unwrap();
+
+        // 创建 TokenStorage（使用同一个存储目录的新实例）
+        let token_storage = TokenStorage::with_storage(Box::new(
+            EncryptedFileStorage::new(temp_dir.path().to_path_buf()).unwrap()
+        ));
+
+        // 使用 get_token 读取，应该自动迁移
+        let retrieved = token_storage.get_token("v1_explicit");
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.provider, "v1_explicit");
+        assert_eq!(retrieved.access_token, "v1_explicit_token");
+
+        // 验证已迁移为 v2
+        let raw_data = storage.load("v1_explicit").unwrap().unwrap();
+        let versioned: VersionedTokenData = serde_json::from_slice(&raw_data).unwrap();
+        assert_eq!(versioned.version, CURRENT_TOKEN_VERSION);
+    }
+
+    // ========== 索引文件测试 ==========
+
+    #[test]
+    fn test_keychain_index_file_operations() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index_path = temp_dir.path().join("keychain_index.json");
+        
+        // 创建一个测试用的 KeychainStorage
+        let keychain = TestKeychainStorage {
+            service_name: "test-service".to_string(),
+            index_path: index_path.clone(),
+        };
+
+        // 测试空索引
+        let keys = keychain.read_index();
+        assert!(keys.is_empty());
+
+        // 测试添加索引
+        keychain.add_to_index("provider1").unwrap();
+        let keys = keychain.read_index();
+        assert_eq!(keys.len(), 1);
+        assert!(keys.contains(&"provider1".to_string()));
+
+        // 测试重复添加（不会重复）
+        keychain.add_to_index("provider1").unwrap();
+        let keys = keychain.read_index();
+        assert_eq!(keys.len(), 1);
+
+        // 测试添加另一个
+        keychain.add_to_index("provider2").unwrap();
+        let keys = keychain.read_index();
+        assert_eq!(keys.len(), 2);
+
+        // 测试移除
+        keychain.remove_from_index("provider1").unwrap();
+        let keys = keychain.read_index();
+        assert_eq!(keys.len(), 1);
+        assert!(!keys.contains(&"provider1".to_string()));
+        assert!(keys.contains(&"provider2".to_string()));
+
+        // 验证文件存在
+        assert!(index_path.exists());
+    }
+
+    /// 测试用 KeychainStorage（只测试索引逻辑，不实际访问 keychain）
+    struct TestKeychainStorage {
+        service_name: String,
+        index_path: PathBuf,
+    }
+
+    impl TestKeychainStorage {
+        fn update_index(&self, keys: &[String]) -> Result<()> {
+            if let Some(parent) = self.index_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .context("Failed to create index directory")?;
+            }
+            let content = serde_json::to_string_pretty(keys)
+                .context("Failed to serialize index")?;
+            std::fs::write(&self.index_path, content)
+                .context("Failed to write index file")?;
+            Ok(())
+        }
+
+        fn read_index(&self) -> Vec<String> {
+            match std::fs::read_to_string(&self.index_path) {
+                Ok(content) => {
+                    serde_json::from_str(&content).unwrap_or_default()
+                }
+                Err(_) => vec![],
+            }
+        }
+
+        fn add_to_index(&self, key: &str) -> Result<()> {
+            let mut keys = self.read_index();
+            if !keys.contains(&key.to_string()) {
+                keys.push(key.to_string());
+                self.update_index(&keys)?;
+            }
+            Ok(())
+        }
+
+        fn remove_from_index(&self, key: &str) -> Result<()> {
+            let mut keys = self.read_index();
+            keys.retain(|k| k != key);
+            self.update_index(&keys)?;
+            Ok(())
+        }
+    }
+
+    // ========== 健康检查测试 ==========
+
+    #[test]
+    fn test_keychain_health_check_simulation() {
+        // 使用 EncryptedFileStorage 模拟健康检查逻辑
+        // 因为实际 KeychainStorage 需要系统 keychain 支持
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = EncryptedFileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+
+        // 模拟健康检查流程
+        let test_key = "__health_check__";
+        let test_data = b"health_check_ok";
+        
+        // save
+        let save_result = storage.save(test_key, test_data);
+        assert!(save_result.is_ok());
+        
+        // load
+        let load_result = storage.load(test_key);
+        assert!(load_result.is_ok());
+        let loaded = load_result.unwrap();
+        assert!(loaded.is_some());
+        assert_eq!(loaded.as_deref(), Some(test_data.as_slice()));
+        
+        // delete
+        let delete_result = storage.delete(test_key);
+        assert!(delete_result.is_ok());
+        
+        // verify deleted
+        let verify_result = storage.load(test_key);
+        assert!(verify_result.is_ok());
+        assert!(verify_result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_storage_roundtrip_with_versioning() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = EncryptedFileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+        let token_storage = TokenStorage::with_storage(Box::new(storage));
+
+        // 创建并保存多个 token
+        let tokens = vec![
+            StoredToken {
+                provider: "github".to_string(),
+                access_token: "gh_token".to_string(),
+                refresh_token: Some("gh_refresh".to_string()),
+                expires_at: Some(Utc::now() + Duration::hours(1)),
+            },
+            StoredToken {
+                provider: "gitlab".to_string(),
+                access_token: "gl_token".to_string(),
+                refresh_token: None,
+                expires_at: None,
+            },
+            StoredToken {
+                provider: "bitbucket".to_string(),
+                access_token: "bb_token".to_string(),
+                refresh_token: Some("bb_refresh".to_string()),
+                expires_at: Some(Utc::now() + Duration::days(7)),
+            },
+        ];
+
+        for token in &tokens {
+            token_storage.save_token(token).unwrap();
+        }
+
+        // 验证所有 token 都能正确读取
+        for token in &tokens {
+            let retrieved = token_storage.get_token(&token.provider);
+            assert!(retrieved.is_some());
+            let retrieved = retrieved.unwrap();
+            assert_eq!(retrieved.access_token, token.access_token);
+            assert_eq!(retrieved.refresh_token, token.refresh_token);
+        }
+
+        // 验证 list_providers
+        let providers = token_storage.list_providers();
+        assert_eq!(providers.len(), 3);
+        assert!(providers.contains(&"github".to_string()));
+        assert!(providers.contains(&"gitlab".to_string()));
+        assert!(providers.contains(&"bitbucket".to_string()));
     }
 }

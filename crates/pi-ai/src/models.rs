@@ -257,6 +257,46 @@ fn builtin_models() -> Vec<Model> {
             compat: None,
         },
 
+        // ==================== Google Vertex AI ====================
+        Model {
+            id: "vertex/gemini-2.5-pro-preview-05-06".to_string(),
+            name: "Gemini 2.5 Pro (Vertex AI)".to_string(),
+            api: Api::GoogleVertex,
+            provider: Provider::GoogleVertex,
+            base_url: "https://us-central1-aiplatform.googleapis.com".to_string(),
+            reasoning: true,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost {
+                input: 1.25,
+                output: 10.0,
+                cache_read: None,
+                cache_write: None,
+            }.into(),
+            context_window: 1048576,
+            max_tokens: 65536,
+            headers: None,
+            compat: None,
+        },
+        Model {
+            id: "vertex/gemini-2.0-flash".to_string(),
+            name: "Gemini 2.0 Flash (Vertex AI)".to_string(),
+            api: Api::GoogleVertex,
+            provider: Provider::GoogleVertex,
+            base_url: "https://us-central1-aiplatform.googleapis.com".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost {
+                input: 0.1,
+                output: 0.4,
+                cache_read: None,
+                cache_write: None,
+            }.into(),
+            context_window: 1048576,
+            max_tokens: 8192,
+            headers: None,
+            compat: None,
+        },
+
         // ==================== Mistral ====================
         Model {
             id: "mistral-large-latest".to_string(),
@@ -715,6 +755,174 @@ fn builtin_models() -> Vec<Model> {
             headers: None,
             compat: None,
         },
+
+        // ==================== DeepSeek ====================
+        Model {
+            id: "deepseek-chat".to_string(),
+            name: "DeepSeek V3".to_string(),
+            api: Api::DeepSeek,
+            provider: Provider::DeepSeek,
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text],
+            cost: ModelCost { input: 0.27, output: 1.1, cache_read: None, cache_write: None }.into(),
+            context_window: 128000,
+            max_tokens: 8192,
+            headers: None,
+            compat: None,
+        },
+        Model {
+            id: "deepseek-reasoner".to_string(),
+            name: "DeepSeek R1".to_string(),
+            api: Api::DeepSeek,
+            provider: Provider::DeepSeek,
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            reasoning: true,
+            input: vec![InputModality::Text],
+            cost: ModelCost { input: 0.55, output: 2.19, cache_read: None, cache_write: None }.into(),
+            context_window: 128000,
+            max_tokens: 8192,
+            headers: None,
+            compat: None,
+        },
+
+        // ==================== Qwen ====================
+        Model {
+            id: "qwen-max".to_string(),
+            name: "Qwen Max".to_string(),
+            api: Api::Qwen,
+            provider: Provider::Qwen,
+            base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text],
+            cost: ModelCost { input: 2.4, output: 9.6, cache_read: None, cache_write: None }.into(),
+            context_window: 131072,
+            max_tokens: 8192,
+            headers: None,
+            compat: None,
+        },
+        Model {
+            id: "qwen-plus".to_string(),
+            name: "Qwen Plus".to_string(),
+            api: Api::Qwen,
+            provider: Provider::Qwen,
+            base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text],
+            cost: ModelCost { input: 0.8, output: 2.0, cache_read: None, cache_write: None }.into(),
+            context_window: 131072,
+            max_tokens: 8192,
+            headers: None,
+            compat: None,
+        },
+
+        // ==================== Minimax ====================
+        Model {
+            id: "abab6.5s-chat".to_string(),
+            name: "ABAB 6.5S Chat".to_string(),
+            api: Api::Minimax,
+            provider: Provider::Minimax,
+            base_url: "https://api.minimax.chat/v1".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text],
+            cost: ModelCost { input: 1.0, output: 1.0, cache_read: None, cache_write: None }.into(),
+            context_window: 245760,
+            max_tokens: 8192,
+            headers: None,
+            compat: None,
+        },
+
+        // ==================== Moonshot (Kimi) ====================
+        Model {
+            id: "moonshot-v1-8k".to_string(),
+            name: "Moonshot V1 8K".to_string(),
+            api: Api::KimiCoding,
+            provider: Provider::KimiCoding,
+            base_url: "https://api.moonshot.cn/v1".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text],
+            cost: ModelCost { input: 1.0, output: 1.0, cache_read: None, cache_write: None }.into(),
+            context_window: 8192,
+            max_tokens: 4096,
+            headers: None,
+            compat: None,
+        },
+        Model {
+            id: "moonshot-v1-128k".to_string(),
+            name: "Moonshot V1 128K".to_string(),
+            api: Api::KimiCoding,
+            provider: Provider::KimiCoding,
+            base_url: "https://api.moonshot.cn/v1".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text],
+            cost: ModelCost { input: 1.0, output: 1.0, cache_read: None, cache_write: None }.into(),
+            context_window: 128000,
+            max_tokens: 4096,
+            headers: None,
+            compat: None,
+        },
+
+        // ==================== Huggingface ====================
+        Model {
+            id: "meta-llama/Llama-3.1-8B-Instruct".to_string(),
+            name: "Llama 3.1 8B Instruct (Huggingface)".to_string(),
+            api: Api::Huggingface,
+            provider: Provider::Huggingface,
+            base_url: "https://api-inference.huggingface.co/v1".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text],
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: None, cache_write: None }.into(),
+            context_window: 128000,
+            max_tokens: 8192,
+            headers: None,
+            compat: None,
+        },
+
+        // ==================== Opencode ====================
+        Model {
+            id: "opencode-latest".to_string(),
+            name: "Opencode Latest".to_string(),
+            api: Api::Opencode,
+            provider: Provider::Opencode,
+            base_url: "https://api.opencode.ai/v1".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text],
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: None, cache_write: None }.into(),
+            context_window: 128000,
+            max_tokens: 8192,
+            headers: None,
+            compat: None,
+        },
+
+        // ==================== GitHub Copilot ====================
+        Model {
+            id: "copilot/gpt-4o".to_string(),
+            name: "GPT-4o (Copilot)".to_string(),
+            api: Api::Other("github-copilot".to_string()),
+            provider: Provider::GithubCopilot,
+            base_url: "https://api.githubcopilot.com".to_string(),
+            reasoning: false,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: None, cache_write: None }.into(),
+            context_window: 128000,
+            max_tokens: 16384,
+            headers: None,
+            compat: None,
+        },
+        Model {
+            id: "copilot/claude-sonnet-4".to_string(),
+            name: "Claude Sonnet 4 (Copilot)".to_string(),
+            api: Api::Other("github-copilot".to_string()),
+            provider: Provider::GithubCopilot,
+            base_url: "https://api.githubcopilot.com".to_string(),
+            reasoning: true,
+            input: vec![InputModality::Text, InputModality::Image],
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: None, cache_write: None }.into(),
+            context_window: 200000,
+            max_tokens: 16384,
+            headers: None,
+            compat: None,
+        },
     ]
 }
 
@@ -852,6 +1060,8 @@ pub fn get_api_key_from_env(provider: &Provider) -> Option<String> {
                 .or_else(|| env::var("GITHUB_TOKEN").ok())
         }
         Provider::Zai => env::var("ZAI_API_KEY").ok(),
+        Provider::DeepSeek => env::var("DEEPSEEK_API_KEY").ok(),
+        Provider::Qwen => env::var("DASHSCOPE_API_KEY").ok(),
         Provider::AmazonBedrock => {
             // Amazon Bedrock 使用 AWS 凭证
             if env::var("AWS_PROFILE").is_ok()
@@ -895,6 +1105,8 @@ pub fn get_api_key_env_var(provider: &Provider) -> Option<&'static str> {
         Provider::GithubCopilot => Some("GITHUB_TOKEN"),
         Provider::Zai => Some("ZAI_API_KEY"),
         Provider::AmazonBedrock => Some("AWS_ACCESS_KEY_ID"),
+        Provider::DeepSeek => Some("DEEPSEEK_API_KEY"),
+        Provider::Qwen => Some("DASHSCOPE_API_KEY"),
         Provider::Other(_) => None,
     }
 }
