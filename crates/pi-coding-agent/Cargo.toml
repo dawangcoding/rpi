@@ -33,6 +33,7 @@ uuid.workspace = true
 base64.workspace = true
 async-trait.workspace = true
 dirs = "5"
+shellexpand = "3"
 hyper.workspace = true
 hyper-util.workspace = true
 http-body-util.workspace = true
@@ -47,6 +48,9 @@ rand = "0.8"
 dotenvy = "0.15"
 toml = "0.8"
 tempfile.workspace = true
+wasmtime = "29"
+wasmtime-wasi = "29"
+notify = "7"
 
 [dev-dependencies]
 assert_cmd.workspace = true

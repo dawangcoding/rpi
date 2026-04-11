@@ -2,10 +2,11 @@ use async_trait::async_trait;
 use pi_agent::types::{AgentTool, AgentEvent, AgentToolResult};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::future::Future;
 use serde::{Serialize, Deserialize};
+use thiserror::Error;
 
 /// 扩展元信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,6 +277,323 @@ impl AgentTool for ExtensionToolWrapper {
         on_update: Option<Box<dyn Fn(AgentToolResult) + Send + Sync>>,
     ) -> anyhow::Result<AgentToolResult> {
         self.inner.execute(tool_call_id, params, cancel, on_update).await
+    }
+}
+
+/// WASM 扩展加载错误
+#[derive(Error, Debug, Clone)]
+pub enum ExtensionLoadError {
+    #[error("WASM 编译错误: {0}")]
+    WasmCompileError(String),
+    #[error("WASM 实例化错误: {0}")]
+    WasmInstantiationError(String),
+    #[error("初始化函数错误: {0}")]
+    InitFunctionError(String),
+    #[error("Manifest 解析错误: {0}")]
+    ManifestError(String),
+    #[error("IO 错误: {0}")]
+    IoError(String),
+    #[error("扩展已存在: {0}")]
+    ExtensionAlreadyExists(String),
+    #[error("扩展未找到: {0}")]
+    ExtensionNotFound(String),
+    #[error("沙箱违规: {0}")]
+    SandboxViolation(String),
+    #[error("资源限制超限: {0}")]
+    ResourceLimitExceeded(String),
+    #[error("沙箱配置错误: {0}")]
+    SandboxConfigError(String),
+}
+
+/// 沙箱配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxConfig {
+    /// 允许访问的文件系统路径
+    #[serde(default)]
+    pub allowed_paths: Vec<PathPermission>,
+    /// 网络权限
+    #[serde(default)]
+    pub network: NetworkPermission,
+    /// 资源限制
+    #[serde(default = "default_resource_limits")]
+    pub resource_limits: ResourceLimits,
+}
+
+/// 默认资源限制
+fn default_resource_limits() -> ResourceLimits {
+    ResourceLimits::default()
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            allowed_paths: Vec::new(),
+            network: NetworkPermission::default(),
+            resource_limits: ResourceLimits::default(),
+        }
+    }
+}
+
+/// 文件路径权限
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PathPermission {
+    /// 允许访问的路径
+    pub path: PathBuf,
+    /// 是否允许读取
+    #[serde(default = "default_true")]
+    pub read: bool,
+    /// 是否允许写入
+    #[serde(default)]
+    pub write: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// 网络权限
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NetworkPermission {
+    /// 是否允许网络访问
+    #[serde(default)]
+    pub enabled: bool,
+    /// 允许访问的主机列表（格式: host:port 或 host）
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+}
+
+/// 资源限制配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceLimits {
+    /// 最大内存（字节），默认 64MB
+    #[serde(default = "default_max_memory")]
+    pub max_memory_bytes: u64,
+    /// 最大燃料（CPU 执行步骤），默认 1,000,000
+    #[serde(default = "default_max_fuel")]
+    pub max_fuel: u64,
+    /// 最大执行时间（毫秒），默认 5000ms
+    #[serde(default = "default_max_execution_time")]
+    pub max_execution_time_ms: u64,
+}
+
+fn default_max_memory() -> u64 {
+    64 * 1024 * 1024 // 64MB
+}
+
+fn default_max_fuel() -> u64 {
+    1_000_000
+}
+
+fn default_max_execution_time() -> u64 {
+    5000 // 5 seconds
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            max_memory_bytes: default_max_memory(),
+            max_fuel: default_max_fuel(),
+            max_execution_time_ms: default_max_execution_time(),
+        }
+    }
+}
+
+/// 权限声明枚举
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", content = "target")]
+pub enum Permission {
+    /// 文件读取权限
+    FileRead(PathBuf),
+    /// 文件写入权限
+    FileWrite(PathBuf),
+    /// 网络访问权限（host:port 格式）
+    NetworkAccess(String),
+    /// 完整网络访问权限
+    FullNetwork,
+}
+
+impl Permission {
+    /// 从字符串解析权限
+    /// 支持格式: "fs.read:/path", "fs.write:/path", "net:host:port", "net:*"
+    pub fn from_str(s: &str) -> Option<Self> {
+        if let Some(path) = s.strip_prefix("fs.read:") {
+            Some(Permission::FileRead(PathBuf::from(path)))
+        } else if let Some(path) = s.strip_prefix("fs.write:") {
+            Some(Permission::FileWrite(PathBuf::from(path)))
+        } else if let Some(host) = s.strip_prefix("net:") {
+            if host == "*" {
+                Some(Permission::FullNetwork)
+            } else {
+                Some(Permission::NetworkAccess(host.to_string()))
+            }
+        } else {
+            None
+        }
+    }
+    
+    /// 转换为字符串表示
+    pub fn to_permission_string(&self) -> String {
+        match self {
+            Permission::FileRead(p) => format!("fs.read:{}", p.display()),
+            Permission::FileWrite(p) => format!("fs.write:{}", p.display()),
+            Permission::NetworkAccess(h) => format!("net:{}", h),
+            Permission::FullNetwork => "net:*".to_string(),
+        }
+    }
+}
+
+/// WASM 扩展 Manifest
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmExtensionManifest {
+    /// 扩展名称
+    pub name: String,
+    /// 扩展版本
+    pub version: String,
+    /// 扩展描述
+    pub description: String,
+    /// 作者
+    #[serde(default)]
+    pub author: String,
+    /// WASM 文件入口点（相对于扩展目录）
+    pub wasm_entry: String,
+    /// 权限声明列表（字符串格式，用于 manifest.json）
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    /// 结构化权限声明列表
+    #[serde(default)]
+    pub structured_permissions: Vec<Permission>,
+    /// 沙箱配置（可选，覆盖默认配置）
+    #[serde(default)]
+    pub sandbox: Option<SandboxConfig>,
+    /// 扩展 ID（自动生成）
+    #[serde(skip)]
+    pub id: String,
+}
+
+impl WasmExtensionManifest {
+    /// 从文件路径加载 manifest
+    pub fn from_file(path: &Path) -> Result<Self, ExtensionLoadError> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| ExtensionLoadError::IoError(e.to_string()))?;
+        let mut manifest: Self = serde_json::from_str(&content)
+            .map_err(|e| ExtensionLoadError::ManifestError(e.to_string()))?;
+        // 生成唯一 ID
+        manifest.id = format!("{}@{}", manifest.name, manifest.version);
+        Ok(manifest)
+    }
+
+    /// 从 JSON 字符串解析
+    pub fn from_json(json: &str) -> Result<Self, ExtensionLoadError> {
+        let mut manifest: Self = serde_json::from_str(json)
+            .map_err(|e| ExtensionLoadError::ManifestError(e.to_string()))?;
+        manifest.id = format!("{}@{}", manifest.name, manifest.version);
+        Ok(manifest)
+    }
+}
+
+/// WASM 实例封装
+/// 封装 wasmtime 的 Store、Instance、Module
+pub struct WasmInstance {
+    /// 扩展唯一标识
+    pub id: String,
+    /// 扩展名称
+    pub name: String,
+    /// 扩展版本
+    pub version: String,
+    /// WASM 文件路径
+    pub wasm_path: PathBuf,
+}
+
+impl WasmInstance {
+    /// 创建新的 WASM 实例描述
+    pub fn new(id: String, name: String, version: String, wasm_path: PathBuf) -> Self {
+        Self {
+            id,
+            name,
+            version,
+            wasm_path,
+        }
+    }
+}
+
+impl std::fmt::Debug for WasmInstance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmInstance")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("version", &self.version)
+            .field("wasm_path", &self.wasm_path)
+            .finish()
+    }
+}
+
+/// WASM 扩展结构体
+pub struct WasmExtension {
+    /// 扩展唯一标识
+    pub id: String,
+    /// 扩展名称
+    pub name: String,
+    /// 扩展版本
+    pub version: String,
+    /// WASM 文件路径
+    pub wasm_path: PathBuf,
+    /// Manifest 信息
+    pub manifest: WasmExtensionManifest,
+    /// WASM 实例（加载后设置）
+    pub instance: Option<WasmInstance>,
+    /// 是否已激活
+    pub is_active: bool,
+    /// 加载时间戳
+    pub loaded_at: Option<std::time::SystemTime>,
+}
+
+impl WasmExtension {
+    /// 创建新的 WASM 扩展
+    pub fn new(manifest: WasmExtensionManifest, wasm_path: PathBuf) -> Self {
+        let id = manifest.id.clone();
+        let name = manifest.name.clone();
+        let version = manifest.version.clone();
+        
+        Self {
+            id,
+            name,
+            version,
+            wasm_path,
+            manifest,
+            instance: None,
+            is_active: false,
+            loaded_at: None,
+        }
+    }
+
+    /// 设置 WASM 实例
+    pub fn set_instance(&mut self, instance: WasmInstance) {
+        self.instance = Some(instance);
+        self.loaded_at = Some(std::time::SystemTime::now());
+    }
+
+    /// 获取扩展状态描述
+    pub fn status(&self) -> &'static str {
+        if self.is_active {
+            "active"
+        } else if self.instance.is_some() {
+            "loaded"
+        } else {
+            "discovered"
+        }
+    }
+}
+
+impl std::fmt::Debug for WasmExtension {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmExtension")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("version", &self.version)
+            .field("wasm_path", &self.wasm_path)
+            .field("is_active", &self.is_active)
+            .field("status", &self.status())
+            .finish()
     }
 }
 
@@ -573,5 +891,224 @@ mod tests {
         
         assert_eq!(parsed.name, manifest.name);
         assert_eq!(parsed.version, manifest.version);
+    }
+
+    // ==================== ExtensionLoadError Tests ====================
+
+    #[test]
+    fn test_extension_load_error_variants() {
+        let compile_err = ExtensionLoadError::WasmCompileError("syntax error".to_string());
+        assert!(compile_err.to_string().contains("WASM 编译错误"));
+
+        let inst_err = ExtensionLoadError::WasmInstantiationError("instantiation failed".to_string());
+        assert!(inst_err.to_string().contains("WASM 实例化错误"));
+
+        let init_err = ExtensionLoadError::InitFunctionError("init failed".to_string());
+        assert!(init_err.to_string().contains("初始化函数错误"));
+
+        let manifest_err = ExtensionLoadError::ManifestError("invalid json".to_string());
+        assert!(manifest_err.to_string().contains("Manifest 解析错误"));
+
+        let io_err = ExtensionLoadError::IoError("file not found".to_string());
+        assert!(io_err.to_string().contains("IO 错误"));
+
+        let exists_err = ExtensionLoadError::ExtensionAlreadyExists("ext1".to_string());
+        assert!(exists_err.to_string().contains("扩展已存在"));
+
+        let not_found_err = ExtensionLoadError::ExtensionNotFound("ext2".to_string());
+        assert!(not_found_err.to_string().contains("扩展未找到"));
+    }
+
+    // ==================== WasmExtensionManifest Tests ====================
+
+    #[test]
+    fn test_wasm_extension_manifest_from_json() {
+        let json = r#"{
+            "name": "test-wasm",
+            "version": "1.0.0",
+            "description": "Test WASM extension",
+            "author": "test-author",
+            "wasm_entry": "test.wasm",
+            "permissions": ["fs.read", "fs.write"]
+        }"#;
+        
+        let manifest = WasmExtensionManifest::from_json(json).unwrap();
+        assert_eq!(manifest.name, "test-wasm");
+        assert_eq!(manifest.version, "1.0.0");
+        assert_eq!(manifest.description, "Test WASM extension");
+        assert_eq!(manifest.author, "test-author");
+        assert_eq!(manifest.wasm_entry, "test.wasm");
+        assert_eq!(manifest.permissions, vec!["fs.read", "fs.write"]);
+        assert_eq!(manifest.id, "test-wasm@1.0.0");
+    }
+
+    #[test]
+    fn test_wasm_extension_manifest_from_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manifest_path = temp_dir.path().join("manifest.json");
+        
+        let json = r#"{
+            "name": "file-test",
+            "version": "2.0.0",
+            "description": "Test from file",
+            "wasm_entry": "main.wasm"
+        }"#;
+        
+        std::fs::write(&manifest_path, json).unwrap();
+        
+        let manifest = WasmExtensionManifest::from_file(&manifest_path).unwrap();
+        assert_eq!(manifest.name, "file-test");
+        assert_eq!(manifest.version, "2.0.0");
+        assert_eq!(manifest.id, "file-test@2.0.0");
+    }
+
+    #[test]
+    fn test_wasm_extension_manifest_invalid_json() {
+        let json = "invalid json {[";
+        let result = WasmExtensionManifest::from_json(json);
+        assert!(result.is_err());
+        
+        match result.unwrap_err() {
+            ExtensionLoadError::ManifestError(_) => (),
+            other => panic!("Expected ManifestError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_wasm_extension_manifest_default_permissions() {
+        let json = r#"{
+            "name": "test",
+            "version": "1.0.0",
+            "description": "Test",
+            "wasm_entry": "test.wasm"
+        }"#;
+        
+        let manifest = WasmExtensionManifest::from_json(json).unwrap();
+        assert!(manifest.permissions.is_empty());
+    }
+
+    // ==================== WasmInstance Tests ====================
+
+    #[test]
+    fn test_wasm_instance_new() {
+        let path = PathBuf::from("/path/to/test.wasm");
+        let instance = WasmInstance::new(
+            "test@1.0.0".to_string(),
+            "test".to_string(),
+            "1.0.0".to_string(),
+            path.clone(),
+        );
+        
+        assert_eq!(instance.id, "test@1.0.0");
+        assert_eq!(instance.name, "test");
+        assert_eq!(instance.version, "1.0.0");
+        assert_eq!(instance.wasm_path, path);
+    }
+
+    #[test]
+    fn test_wasm_instance_debug() {
+        let instance = WasmInstance::new(
+            "id".to_string(),
+            "name".to_string(),
+            "1.0.0".to_string(),
+            PathBuf::from("test.wasm"),
+        );
+        
+        let debug_str = format!("{:?}", instance);
+        assert!(debug_str.contains("WasmInstance"));
+        assert!(debug_str.contains("id"));
+        assert!(debug_str.contains("name"));
+    }
+
+    // ==================== WasmExtension Tests ====================
+
+    #[test]
+    fn test_wasm_extension_new() {
+        let manifest = WasmExtensionManifest::from_json(r#"{
+            "name": "test-ext",
+            "version": "1.0.0",
+            "description": "Test",
+            "wasm_entry": "test.wasm"
+        }"#).unwrap();
+        
+        let path = PathBuf::from("/path/to/test.wasm");
+        let extension = WasmExtension::new(manifest, path.clone());
+        
+        assert_eq!(extension.id, "test-ext@1.0.0");
+        assert_eq!(extension.name, "test-ext");
+        assert_eq!(extension.version, "1.0.0");
+        assert_eq!(extension.wasm_path, path);
+        assert!(extension.instance.is_none());
+        assert!(!extension.is_active);
+        assert!(extension.loaded_at.is_none());
+    }
+
+    #[test]
+    fn test_wasm_extension_set_instance() {
+        let manifest = WasmExtensionManifest::from_json(r#"{
+            "name": "test",
+            "version": "1.0.0",
+            "description": "Test",
+            "wasm_entry": "test.wasm"
+        }"#).unwrap();
+        
+        let mut extension = WasmExtension::new(manifest, PathBuf::from("test.wasm"));
+        
+        let instance = WasmInstance::new(
+            extension.id.clone(),
+            extension.name.clone(),
+            extension.version.clone(),
+            extension.wasm_path.clone(),
+        );
+        
+        extension.set_instance(instance);
+        
+        assert!(extension.instance.is_some());
+        assert!(extension.loaded_at.is_some());
+    }
+
+    #[test]
+    fn test_wasm_extension_status() {
+        let manifest = WasmExtensionManifest::from_json(r#"{
+            "name": "test",
+            "version": "1.0.0",
+            "description": "Test",
+            "wasm_entry": "test.wasm"
+        }"#).unwrap();
+        
+        let mut extension = WasmExtension::new(manifest, PathBuf::from("test.wasm"));
+        
+        // Initial status
+        assert_eq!(extension.status(), "discovered");
+        
+        // After setting instance
+        extension.set_instance(WasmInstance::new(
+            extension.id.clone(),
+            extension.name.clone(),
+            extension.version.clone(),
+            extension.wasm_path.clone(),
+        ));
+        assert_eq!(extension.status(), "loaded");
+        
+        // After activation
+        extension.is_active = true;
+        assert_eq!(extension.status(), "active");
+    }
+
+    #[test]
+    fn test_wasm_extension_debug() {
+        let manifest = WasmExtensionManifest::from_json(r#"{
+            "name": "test",
+            "version": "1.0.0",
+            "description": "Test",
+            "wasm_entry": "test.wasm"
+        }"#).unwrap();
+        
+        let extension = WasmExtension::new(manifest, PathBuf::from("test.wasm"));
+        
+        let debug_str = format!("{:?}", extension);
+        assert!(debug_str.contains("WasmExtension"));
+        assert!(debug_str.contains("test@1.0.0"));
+        assert!(debug_str.contains("status"));
     }
 }

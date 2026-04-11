@@ -72,6 +72,7 @@ impl CodingAgentAutocompleteProvider {
         slash_provider.add_command(SlashCommand::new("logout", "Logout from OAuth provider"));
         slash_provider.add_command(SlashCommand::new("auth", "Show current authentication status"));
         slash_provider.add_command(SlashCommand::new("theme", "Switch color theme (dark, light)"));
+        slash_provider.add_command(SlashCommand::new("keybindings", "Configure keyboard shortcuts"));
         Self {
             slash_provider,
             file_provider: FileAutocompleteProvider::new(cwd),
@@ -117,6 +118,9 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
     // 启用 bracketed paste mode
     write!(stdout, "\x1b[?2004h")?;
     stdout.flush()?;
+
+    // 保存 keybindings_path 在移动 app_config 之前
+    let keybindings_config_path = config.app_config.keybindings_path();
 
     // 2. 创建 AgentSession
     let session = AgentSession::new(AgentSessionConfig {
@@ -817,6 +821,36 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                         }
                         let (term_width, _) = terminal.size();
                         render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                    } else if prompt == "/keybindings" {
+                        // 进入快捷键配置模式
+                        let mut kb_view = super::keybindings_config::KeybindingsConfigView::new(keybindings_config_path.clone());
+                        
+                        message_history.add_system_message("Entering keybindings configuration mode...".to_string());
+                        let (term_width, _) = terminal.size();
+                        render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
+                        
+                        // 快捷键配置循环 - 从 input_rx channel 消费输入
+                        loop {
+                            // 渲染配置视图
+                            let (term_width, _) = terminal.size();
+                            kb_view.render(term_width, &mut stdout)?;
+                            
+                            // 从 input_rx channel 异步接收输入
+                            let data = match input_rx.recv().await {
+                                Some(d) => d,
+                                None => break,
+                            };
+                            let input = String::from_utf8_lossy(&data);
+                            kb_view.handle_input(&input);
+                            
+                            if kb_view.should_exit() {
+                                break;
+                            }
+                        }
+                        
+                        // 退出配置模式，恢复主界面
+                        let (term_width, _) = terminal.size();
+                        render_full(&message_history, &status_bar, &editor, term_width, &mut stdout)?;
                     } else if prompt == "/forks" {
                         // 列出当前会话的所有 fork
                         let session_id = session.session_id_async().await;
@@ -1042,6 +1076,7 @@ pub async fn run(config: InteractiveConfig) -> anyhow::Result<()> {
                         message_history.add_system_message("  /theme         - Show or switch color theme".to_string());
                         message_history.add_system_message("  /theme dark    - Switch to dark theme".to_string());
                         message_history.add_system_message("  /theme light   - Switch to light theme".to_string());
+                        message_history.add_system_message("  /keybindings   - Configure keyboard shortcuts".to_string());
                         message_history.add_system_message("  /exit          - Exit the application".to_string());
                         message_history.add_system_message("  /quit          - Alias for /exit".to_string());
                         

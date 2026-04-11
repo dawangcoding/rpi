@@ -49,6 +49,10 @@ pub struct AppConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions_dir: Option<String>,
 
+    /// 快捷键配置文件路径
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keybindings_path: Option<String>,
+
     /// 工具权限配置
     #[serde(default)]
     pub permissions: Option<ToolPermissionConfig>,
@@ -190,6 +194,26 @@ impl AppConfig {
         } else {
             Self::config_dir().join("sessions")
         }
+    }
+
+    /// 获取快捷键配置文件路径
+    pub fn keybindings_path(&self) -> PathBuf {
+        if let Some(ref path) = self.keybindings_path {
+            PathBuf::from(path)
+        } else {
+            Self::config_dir().join("keybindings.toml")
+        }
+    }
+
+    /// 加载并应用快捷键配置
+    pub fn load_keybindings(&self) -> anyhow::Result<()> {
+        let path = self.keybindings_path();
+        if path.exists() {
+            let config = pi_tui::keybindings::KeybindingsConfig::load_from_file(&path)?;
+            pi_tui::keybindings::apply_keybindings_config(&config)?;
+            tracing::info!("Loaded keybindings config from {}", path.display());
+        }
+        Ok(())
     }
 
     /// 获取 API Key (先查 OAuth token，再查配置，最后查环境变量)

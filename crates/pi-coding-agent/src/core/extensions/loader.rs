@@ -1,7 +1,8 @@
-use super::types::{ExtensionManifest, Extension};
+use super::types::{ExtensionManifest, Extension, WasmExtension, WasmInstance, WasmExtensionManifest, ExtensionLoadError, SandboxConfig};
+use super::sandbox::WasmSandbox;
 use crate::config::AppConfig;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 /// 扩展加载器 - 从文件系统扫描和加载扩展
@@ -182,6 +183,257 @@ impl ExtensionRegistry {
 impl Default for ExtensionRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// WASM 扩展加载器 - 使用 wasmtime 动态加载 WASM 扩展
+///
+/// 集成沙箱，提供安全的 WASM 执行环境
+pub struct WasmExtensionLoader {
+    /// 默认沙箱配置（用于没有指定沙箱配置的扩展）
+    default_sandbox_config: SandboxConfig,
+}
+
+impl WasmExtensionLoader {
+    /// 创建新的 WASM 扩展加载器
+    pub fn new() -> Result<Self, ExtensionLoadError> {
+        Ok(Self {
+            default_sandbox_config: SandboxConfig::default(),
+        })
+    }
+
+    /// 使用自定义默认沙箱配置创建加载器
+    pub fn with_sandbox_config(config: SandboxConfig) -> Result<Self, ExtensionLoadError> {
+        Ok(Self {
+            default_sandbox_config: config,
+        })
+    }
+
+    /// 扫描目录下的 WASM 扩展
+    /// 查找 .wasm 文件和对应的 manifest.json
+    pub fn scan_wasm_extensions(&self, dir: &Path) -> Vec<(WasmExtensionManifest, PathBuf)> {
+        let mut results = Vec::new();
+
+        if !dir.exists() {
+            tracing::debug!("WASM extensions directory does not exist: {:?}", dir);
+            return results;
+        }
+
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!("Failed to read WASM extensions directory: {}", e);
+                return results;
+            }
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            
+            // 检查是否是包含 manifest.json 的目录
+            if path.is_dir() {
+                let manifest_path = path.join("manifest.json");
+                let wasm_file = Self::find_wasm_file(&path);
+                
+                if manifest_path.exists() && wasm_file.is_some() {
+                    match WasmExtensionManifest::from_file(&manifest_path) {
+                        Ok(manifest) => {
+                            tracing::info!(
+                                "Found WASM extension: {} v{} at {:?}",
+                                manifest.name,
+                                manifest.version,
+                                path
+                            );
+                            results.push((manifest, wasm_file.unwrap()));
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to load WASM manifest {:?}: {}", manifest_path, e);
+                        }
+                    }
+                }
+            }
+            // 或者直接是 .wasm 文件
+            else if path.extension().map(|e| e == "wasm").unwrap_or(false) {
+                // 尝试查找同目录下的 manifest.json
+                let manifest_path = path.with_extension("json");
+                if manifest_path.exists() {
+                    match WasmExtensionManifest::from_file(&manifest_path) {
+                        Ok(manifest) => {
+                            tracing::info!(
+                                "Found WASM extension: {} v{} at {:?}",
+                                manifest.name,
+                                manifest.version,
+                                path
+                            );
+                            results.push((manifest, path.clone()));
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to load WASM manifest {:?}: {}", manifest_path, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        results
+    }
+
+    /// 在目录中查找 .wasm 文件
+    fn find_wasm_file(dir: &Path) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "wasm").unwrap_or(false) {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    /// 加载单个 WASM 扩展
+    /// 编译 .wasm 文件，创建沙箱化的 Store 和 Instance
+    ///
+    /// 安全特性:
+    /// - 文件系统访问仅限 manifest 中声明的路径
+    /// - 网络访问默认禁止
+    /// - 内存和 CPU 资源受限
+    /// - 扩展崩溃不影响主程序
+    pub fn load_wasm(&self, path: &Path) -> Result<WasmExtension, ExtensionLoadError> {
+        // 1. 查找并加载 manifest
+        // 先检查同目录下的 manifest.json，再检查同名 .json 文件
+        let manifest_path = {
+            let candidate_dir = path
+                .parent()
+                .map(|p| p.join("manifest.json"))
+                .filter(|p| p.exists());
+
+            if let Some(p) = candidate_dir {
+                p
+            } else {
+                let json_sidecar = path.with_extension("json");
+                if json_sidecar.exists() {
+                    json_sidecar
+                } else {
+                    return Err(ExtensionLoadError::ManifestError(
+                        "manifest.json not found".to_string(),
+                    ));
+                }
+            }
+        };
+    
+        let manifest = WasmExtensionManifest::from_file(&manifest_path)?;
+    
+        // 2. 获取扩展目录（用于解析相对路径）
+        let extension_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    
+        // 3. 根据 manifest 创建沙箱
+        let sandbox = if let Some(ref sandbox_config) = manifest.sandbox {
+            // 使用 manifest 中指定的沙箱配置
+            WasmSandbox::with_extension_dir(sandbox_config.clone(), extension_dir)?
+        } else {
+            // 从权限声明构建沙箱配置
+            WasmSandbox::from_manifest_with_dir(&manifest, extension_dir)?
+        };
+    
+        tracing::info!(
+            "Loading WASM extension {} v{} with sandbox config: {:?}",
+            manifest.name,
+            manifest.version,
+            sandbox.config()
+        );
+    
+        // 4. 编译 WASM 模块
+        let wasm_bytes = std::fs::read(path)
+            .map_err(|e| ExtensionLoadError::IoError(e.to_string()))?;
+    
+        let module = sandbox.compile_module(&wasm_bytes)?;
+    
+        // 5. 在沙箱中实例化模块
+        let (mut store, instance) = sandbox.instantiate_module(&module)?;
+    
+        // 6. 调用初始化函数（如果存在）- 使用安全执行
+        if let Ok(init_func) = instance.get_typed_func::<(), ()>(&mut store, "init") {
+            match sandbox.execute_safely(&mut store, |s| {
+                init_func.call(s, ())?;
+                Ok(())
+            }) {
+                Ok(()) => {
+                    tracing::info!("WASM init function succeeded for {}", manifest.name);
+                }
+                Err(e) => {
+                    tracing::warn!("WASM init function failed for {}: {}", manifest.name, e);
+                    // 初始化失败不阻止加载，只是记录警告
+                }
+            }
+        }
+    
+        // 7. 尝试调用 _start（WASI 命令默认入口）
+        if let Ok(start_func) = instance.get_typed_func::<(), ()>(&mut store, "_start") {
+            match sandbox.execute_safely(&mut store, |s| {
+                start_func.call(s, ())?;
+                Ok(())
+            }) {
+                Ok(()) => {
+                    tracing::debug!("WASM _start function succeeded for {}", manifest.name);
+                }
+                Err(e) => {
+                    tracing::debug!("WASM _start function call: {}", e);
+                }
+            }
+        }
+    
+        // 8. 创建 WasmExtension
+        let mut extension = WasmExtension::new(manifest, path.to_path_buf());
+        let instance_info = WasmInstance::new(
+            extension.id.clone(),
+            extension.name.clone(),
+            extension.version.clone(),
+            path.to_path_buf(),
+        );
+        extension.set_instance(instance_info);
+    
+        tracing::info!(
+            "Successfully loaded WASM extension: {} v{} (sandboxed)",
+            extension.name,
+            extension.version
+        );
+    
+        Ok(extension)
+    }
+
+    /// 卸载 WASM 扩展
+    /// 通过 drop Store/Instance 来释放资源
+    pub fn unload(&self, extension: &mut WasmExtension) -> Result<(), ExtensionLoadError> {
+        if extension.instance.is_none() {
+            return Err(ExtensionLoadError::ExtensionNotFound(
+                extension.id.clone()
+            ));
+        }
+
+        // 调用 deinit 函数（如果存在）
+        // 注意：由于 Store 和 Instance 被封装，这里只是标记为已卸载
+        // 实际的资源释放由 drop 处理
+        extension.instance = None;
+        extension.is_active = false;
+        
+        tracing::info!(
+            "Unloaded WASM extension: {} v{}",
+            extension.name,
+            extension.version
+        );
+
+        Ok(())
+    }
+
+    /// 获取默认沙箱配置
+    pub fn default_sandbox_config(&self) -> &SandboxConfig {
+        &self.default_sandbox_config
+    }
+}
+
+impl Default for WasmExtensionLoader {
+    fn default() -> Self {
+        Self::new().expect("Failed to create WasmExtensionLoader")
     }
 }
 
@@ -456,5 +708,195 @@ mod tests {
         let extensions = loader.load_extensions(&registry, &config);
         
         assert_eq!(extensions.len(), 1);
+    }
+
+    // ==================== WasmExtensionLoader Tests ====================
+
+    #[test]
+    fn test_wasm_extension_loader_new() {
+        let loader = WasmExtensionLoader::new();
+        assert!(loader.is_ok());
+        
+        let loader = loader.unwrap();
+        // Default sandbox config should be available
+        let _ = loader.default_sandbox_config();
+    }
+
+    #[test]
+    fn test_wasm_extension_loader_default() {
+        let loader = WasmExtensionLoader::default();
+        // Default sandbox config should be available
+        let _ = loader.default_sandbox_config();
+    }
+
+    #[test]
+    fn test_wasm_extension_loader_scan_empty_dir() {
+        let loader = WasmExtensionLoader::new().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        
+        let results = loader.scan_wasm_extensions(temp_dir.path());
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_wasm_extension_loader_scan_nonexistent_dir() {
+        let loader = WasmExtensionLoader::new().unwrap();
+        
+        let results = loader.scan_wasm_extensions(Path::new("/nonexistent/path/that/does/not/exist"));
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_wasm_extension_loader_scan_with_manifest() {
+        let loader = WasmExtensionLoader::new().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        
+        // Create extension directory structure
+        let ext_dir = temp_dir.path().join("test-ext");
+        std::fs::create_dir(&ext_dir).unwrap();
+        
+        // Create manifest.json
+        let manifest_content = r#"{
+            "name": "test-extension",
+            "version": "1.0.0",
+            "description": "Test extension",
+            "author": "test",
+            "wasm_entry": "test.wasm",
+            "permissions": ["fs.read"]
+        }"#;
+        std::fs::write(ext_dir.join("manifest.json"), manifest_content).unwrap();
+        
+        // Create dummy .wasm file (not valid WASM, just for scanning)
+        std::fs::write(ext_dir.join("test.wasm"), b"not valid wasm").unwrap();
+        
+        let results = loader.scan_wasm_extensions(temp_dir.path());
+        assert_eq!(results.len(), 1);
+        
+        let (manifest, wasm_path) = &results[0];
+        assert_eq!(manifest.name, "test-extension");
+        assert_eq!(manifest.version, "1.0.0");
+        assert_eq!(wasm_path.file_name().unwrap(), "test.wasm");
+    }
+
+    #[test]
+    fn test_wasm_extension_loader_load_invalid_wasm() {
+        let loader = WasmExtensionLoader::new().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        
+        // Create extension directory
+        let ext_dir = temp_dir.path().join("test-ext");
+        std::fs::create_dir(&ext_dir).unwrap();
+        
+        // Create manifest.json
+        let manifest_content = r#"{
+            "name": "test-extension",
+            "version": "1.0.0",
+            "description": "Test extension",
+            "author": "test",
+            "wasm_entry": "test.wasm"
+        }"#;
+        std::fs::write(ext_dir.join("manifest.json"), manifest_content).unwrap();
+        
+        // Create invalid .wasm file
+        let wasm_path = ext_dir.join("test.wasm");
+        std::fs::write(&wasm_path, b"this is not valid wasm").unwrap();
+        
+        // Loading should fail with compile error
+        let result = loader.load_wasm(&wasm_path);
+        assert!(result.is_err());
+        
+        match result.unwrap_err() {
+            ExtensionLoadError::WasmCompileError(_) => (), // Expected
+            other => panic!("Expected WasmCompileError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_wasm_extension_loader_load_missing_manifest() {
+        let loader = WasmExtensionLoader::new().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        
+        // Create just a .wasm file without manifest
+        let wasm_path = temp_dir.path().join("test.wasm");
+        std::fs::write(&wasm_path, b"not valid wasm").unwrap();
+        
+        // Loading should fail with manifest error
+        let result = loader.load_wasm(&wasm_path);
+        assert!(result.is_err());
+        
+        match result.unwrap_err() {
+            ExtensionLoadError::ManifestError(_) => (), // Expected
+            other => panic!("Expected ManifestError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_wasm_extension_loader_unload() {
+        let loader = WasmExtensionLoader::new().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        
+        // Create extension directory
+        let ext_dir = temp_dir.path().join("test-ext");
+        std::fs::create_dir(&ext_dir).unwrap();
+        
+        // Create manifest.json with required wasm_entry field
+        let manifest_content = r#"{
+            "name": "test-extension",
+            "version": "1.0.0",
+            "description": "Test extension",
+            "wasm_entry": "test.wasm"
+        }"#;
+        std::fs::write(ext_dir.join("manifest.json"), manifest_content).unwrap();
+        std::fs::write(ext_dir.join("test.wasm"), b"not valid wasm").unwrap();
+        
+        // Create a WasmExtension manually
+        let manifest = WasmExtensionManifest::from_file(&ext_dir.join("manifest.json")).unwrap();
+        let mut extension = WasmExtension::new(manifest, ext_dir.join("test.wasm"));
+        
+        // Set a mock instance
+        extension.set_instance(WasmInstance::new(
+            extension.id.clone(),
+            extension.name.clone(),
+            extension.version.clone(),
+            extension.wasm_path.clone(),
+        ));
+        
+        // Unload should succeed
+        let result = loader.unload(&mut extension);
+        assert!(result.is_ok());
+        assert!(extension.instance.is_none());
+        assert!(!extension.is_active);
+    }
+
+    #[test]
+    fn test_wasm_extension_loader_unload_not_loaded() {
+        let loader = WasmExtensionLoader::new().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        
+        // Create extension directory
+        let ext_dir = temp_dir.path().join("test-ext");
+        std::fs::create_dir(&ext_dir).unwrap();
+        
+        // Create manifest.json with required wasm_entry field
+        let manifest_content = r#"{
+            "name": "test-extension",
+            "version": "1.0.0",
+            "description": "Test extension",
+            "wasm_entry": "test.wasm"
+        }"#;
+        std::fs::write(ext_dir.join("manifest.json"), manifest_content).unwrap();
+        
+        // Create extension without instance
+        let manifest = WasmExtensionManifest::from_file(&ext_dir.join("manifest.json")).unwrap();
+        let mut extension = WasmExtension::new(manifest, ext_dir.join("test.wasm"));
+        
+        // Unload should fail because instance is None
+        let result = loader.unload(&mut extension);
+        assert!(result.is_err());
+        
+        match result.unwrap_err() {
+            ExtensionLoadError::ExtensionNotFound(_) => (), // Expected
+            other => panic!("Expected ExtensionNotFound, got {:?}", other),
+        }
     }
 }
