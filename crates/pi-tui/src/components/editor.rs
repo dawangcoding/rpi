@@ -17,6 +17,8 @@ struct EditorSnapshot {
 }
 
 /// 选择范围
+/// 
+/// 定义编辑器中的文本选择区域
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
     pub start_row: usize,
@@ -59,6 +61,8 @@ impl Selection {
 }
 
 /// 编辑器配置
+/// 
+/// 控制编辑器的行为和外观
 #[derive(Debug, Clone)]
 pub struct EditorConfig {
     /// 占位符文本
@@ -86,6 +90,8 @@ impl Default for EditorConfig {
 }
 
 /// 多行文本编辑器
+/// 
+/// 支持光标移动、文本编辑、撤销重做、自动完成等功能
 pub struct Editor {
     // 文本状态
     lines: Vec<String>,
@@ -1652,7 +1658,7 @@ fn test_editor_empty_content_render() {
     assert!(!lines.is_empty());
     
     // 空编辑器应该至少有一行
-    assert!(lines.len() >= 1);
+    assert!(!lines.is_empty());
 }
 
 #[test]

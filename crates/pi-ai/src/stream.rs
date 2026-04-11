@@ -10,6 +10,8 @@ use crate::models::get_model;
 use crate::types::*;
 
 /// 流式调用 LLM（底层 API）
+/// 
+/// 返回事件流，用于实时接收模型响应
 pub async fn stream(
     context: &Context,
     model: &Model,
@@ -19,7 +21,9 @@ pub async fn stream(
     provider.stream(context, model, options).await
 }
 
-/// 流式调用（简化版 - 自动处理 thinking level 等）
+/// 流式调用（简化版）
+/// 
+/// 使用 SimpleStreamOptions 进行流式调用
 pub async fn stream_simple(
     context: &Context,
     model: &Model,
@@ -41,7 +45,9 @@ pub async fn stream_simple(
     stream(context, model, &stream_options).await
 }
 
-/// 非流式调用 - 收集所有事件返回完整消息
+/// 非流式调用
+/// 
+/// 收集所有事件并返回完整消息
 pub async fn complete(
     context: &Context,
     model: &Model,
@@ -71,6 +77,8 @@ pub async fn complete(
 }
 
 /// 非流式调用（简化版）
+/// 
+/// 使用 SimpleStreamOptions 进行非流式调用
 pub async fn complete_simple(
     context: &Context,
     model: &Model,
@@ -93,6 +101,8 @@ pub async fn complete_simple(
 }
 
 /// 通过模型 ID 流式调用 LLM
+/// 
+/// 根据模型 ID 自动查找模型配置并流式调用
 pub async fn stream_by_model_id(
     context: &Context,
     model_id: &str,
@@ -104,6 +114,8 @@ pub async fn stream_by_model_id(
 }
 
 /// 通过模型 ID 非流式调用 LLM
+/// 
+/// 根据模型 ID 自动查找模型配置并返回完整消息
 pub async fn complete_by_model_id(
     context: &Context,
     model_id: &str,

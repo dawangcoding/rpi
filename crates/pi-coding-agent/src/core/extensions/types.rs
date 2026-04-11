@@ -282,7 +282,7 @@ impl AgentTool for ExtensionToolWrapper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pi_agent::types::{AgentToolResult, AgentEvent};
+    use pi_agent::types::AgentToolResult;
     use std::path::PathBuf;
 
     // ==================== EventResult Tests ====================

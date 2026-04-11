@@ -12,7 +12,9 @@ use pi_ai::types::*;
 use crate::types::*;
 use crate::agent_loop::*;
 
-/// Agent 选项
+/// Agent 配置选项
+/// 
+/// 用于创建和配置 Agent 实例的各项参数
 #[allow(clippy::type_complexity)] // 复杂类型是必要的，用于回调函数
 pub struct AgentOptions {
     pub model: Option<Model>,
@@ -107,6 +109,8 @@ pub fn default_convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
 }
 
 /// Agent 主结构体
+/// 
+/// 管理消息队列、生命周期和事件处理的核心组件
 #[allow(clippy::type_complexity)] // 复杂类型是必要的，用于回调函数
 pub struct Agent {
     state: Arc<RwLock<AgentState>>,
@@ -148,7 +152,9 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// 创建新的 Agent
+    /// 创建新的 Agent 实例
+    /// 
+    /// 根据提供的选项初始化 Agent 状态和配置
     pub fn new(options: AgentOptions) -> Self {
         let model = options.model.unwrap_or_else(default_model);
         let mut state = AgentState::new(model);
@@ -569,11 +575,10 @@ mod tests {
     #[test]
     fn test_agent_creation() {
         let options = AgentOptions::default();
-        let agent = Agent::new(options);
+        let _agent = Agent::new(options);
         
         // 测试 Agent 创建成功
         // 由于 Agent 字段是私有的，我们通过测试方法不 panic 来验证
-        assert!(true);
     }
 
     #[test]
@@ -583,10 +588,9 @@ mod tests {
             model: Some(model.clone()),
             ..Default::default()
         };
-        let agent = Agent::new(options);
+        let _agent = Agent::new(options);
         
         // 验证创建成功
-        assert!(true);
     }
 
     #[test]
@@ -595,10 +599,9 @@ mod tests {
             system_prompt: Some("You are a test assistant".to_string()),
             ..Default::default()
         };
-        let agent = Agent::new(options);
+        let _agent = Agent::new(options);
         
         // 验证创建成功
-        assert!(true);
     }
 
     #[test]
@@ -608,10 +611,9 @@ mod tests {
             tools,
             ..Default::default()
         };
-        let agent = Agent::new(options);
+        let _agent = Agent::new(options);
         
         // 验证创建成功
-        assert!(true);
     }
 
     #[test]
@@ -699,9 +701,6 @@ mod tests {
         
         // 给订阅一点时间注册
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        
-        // 验证订阅成功（通过不 panic）
-        assert!(true);
     }
 
     #[tokio::test]

@@ -72,6 +72,8 @@ impl AgentMessage {
 }
 
 /// 工具执行模式
+/// 
+/// 定义工具调用的执行策略
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[derive(Default)]
 pub enum ToolExecutionMode {
@@ -82,6 +84,8 @@ pub enum ToolExecutionMode {
 
 
 /// 工具执行结果
+/// 
+/// 包含工具执行返回的内容和元数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentToolResult {
     pub content: Vec<ContentBlock>,
@@ -99,6 +103,8 @@ impl AgentToolResult {
 }
 
 /// 工具调用上下文（用于钩子）
+/// 
+/// 传递给 before/after tool call 钩子的上下文信息
 #[derive(Debug, Clone)]
 pub struct ToolCallContext {
     pub assistant_message: AssistantMessage,
@@ -107,6 +113,8 @@ pub struct ToolCallContext {
 }
 
 /// beforeToolCall 结果
+/// 
+/// 用于控制是否阻止工具执行
 #[derive(Debug, Clone, Default)]
 pub struct BeforeToolCallResult {
     pub block: bool,
@@ -123,6 +131,8 @@ impl BeforeToolCallResult {
 }
 
 /// afterToolCall 结果
+/// 
+/// 用于修改工具执行结果
 #[derive(Debug, Clone, Default)]
 pub struct AfterToolCallResult {
     pub content: Option<Vec<ContentBlock>>,
@@ -131,6 +141,8 @@ pub struct AfterToolCallResult {
 }
 
 /// Agent 工具 trait
+/// 
+/// 定义 Agent 可调用的工具的接口
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn name(&self) -> &str;
@@ -163,6 +175,8 @@ pub fn agent_tool_to_llm_tool(tool: &dyn AgentTool) -> pi_ai::types::Tool {
 }
 
 /// Agent 上下文
+/// 
+/// 包含 Agent 运行时的系统提示词、消息历史和可用工具
 pub struct AgentContext {
     pub system_prompt: String,
     pub messages: Vec<AgentMessage>,
@@ -201,6 +215,8 @@ impl AgentContext {
 }
 
 /// Agent 事件
+/// 
+/// 描述 Agent 生命周期中的各种事件
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum AgentEvent {
@@ -283,9 +299,13 @@ pub enum AgentEvent {
 }
 
 /// 事件监听器回调类型
+/// 
+/// 用于接收 Agent 事件的回调函数类型
 pub type AgentEventSink = Box<dyn Fn(AgentEvent) + Send + Sync>;
 
 /// Agent 状态
+/// 
+/// 保存 Agent 运行时的完整状态
 pub struct AgentState {
     pub system_prompt: String,
     pub model: Model,
@@ -348,6 +368,8 @@ impl AgentState {
 }
 
 /// 队列模式
+/// 
+/// 定义消息队列的处理策略
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[derive(Default)]
 pub enum QueueMode {
@@ -358,6 +380,8 @@ pub enum QueueMode {
 
 
 /// 待处理消息队列
+/// 
+/// 管理待处理消息的缓冲队列
 pub struct PendingMessageQueue {
     messages: Vec<AgentMessage>,
     pub mode: QueueMode,

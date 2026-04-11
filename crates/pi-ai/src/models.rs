@@ -7,6 +7,8 @@ use std::sync::OnceLock;
 use crate::types::*;
 
 /// 模型成本（每百万 token 的美元价格）
+/// 
+/// 定义模型的定价信息
 #[derive(Debug, Clone, Copy)]
 pub struct ModelCost {
     pub input: f64,
@@ -663,16 +665,22 @@ fn get_registry() -> &'static HashMap<String, Model> {
 }
 
 /// 通过模型 ID 获取模型
+/// 
+/// 从模型注册表中查找指定 ID 的模型
 pub fn get_model(id: &str) -> Option<Model> {
     get_registry().get(id).cloned()
 }
 
 /// 获取所有模型
+/// 
+/// 返回注册表中所有可用的模型
 pub fn get_models() -> Vec<Model> {
     get_registry().values().cloned().collect()
 }
 
 /// 根据 provider 获取模型
+/// 
+/// 筛选指定提供商的模型列表
 pub fn get_models_by_provider(provider: &Provider) -> Vec<Model> {
     get_registry()
         .values()
@@ -682,6 +690,8 @@ pub fn get_models_by_provider(provider: &Provider) -> Vec<Model> {
 }
 
 /// 根据 API 类型获取模型
+/// 
+/// 筛选指定 API 类型的模型列表
 pub fn get_models_by_api(api: &Api) -> Vec<Model> {
     get_registry()
         .values()
@@ -691,6 +701,8 @@ pub fn get_models_by_api(api: &Api) -> Vec<Model> {
 }
 
 /// 计算成本（返回美元）
+/// 
+/// 根据 token 使用量计算 API 调用成本
 pub fn calculate_cost(model: &Model, usage: &Usage) -> f64 {
     let input_cost = (model.cost.input / 1_000_000.0) * usage.input_tokens as f64;
     let output_cost = (model.cost.output / 1_000_000.0) * usage.output_tokens as f64;
@@ -707,6 +719,8 @@ pub fn calculate_cost(model: &Model, usage: &Usage) -> f64 {
 }
 
 /// 检查模型是否支持 xhigh thinking level
+/// 
+/// 判断模型是否支持最高级别的思考模式
 pub fn supports_xhigh(model: &Model) -> bool {
     let id = &model.id;
     id.contains("gpt-5.2") || id.contains("gpt-5.3") || id.contains("gpt-5.4")
@@ -714,6 +728,8 @@ pub fn supports_xhigh(model: &Model) -> bool {
 }
 
 /// 检查两个模型是否相等
+/// 
+/// 比较两个模型的 ID 和提供商
 pub fn models_are_equal(a: Option<&Model>, b: Option<&Model>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => a.id == b.id && a.provider == b.provider,
@@ -722,6 +738,8 @@ pub fn models_are_equal(a: Option<&Model>, b: Option<&Model>) -> bool {
 }
 
 /// 从环境变量获取 API Key
+/// 
+/// 根据提供商从环境变量读取 API 密钥
 pub fn get_api_key_from_env(provider: &Provider) -> Option<String> {
     use std::env;
     
@@ -779,6 +797,8 @@ pub fn get_api_key_from_env(provider: &Provider) -> Option<String> {
 }
 
 /// 获取指定 provider 的 API key 环境变量名称
+/// 
+/// 返回提供商对应的环境变量名
 pub fn get_api_key_env_var(provider: &Provider) -> Option<&'static str> {
     match provider {
         Provider::Anthropic => Some("ANTHROPIC_API_KEY"),

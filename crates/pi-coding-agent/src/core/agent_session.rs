@@ -21,6 +21,8 @@ use super::extensions::builtin::CounterExtensionFactory;
 use crate::config::AppConfig;
 
 /// 会话统计
+/// 
+/// 记录 Agent 会话的各项统计数据
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SessionStats {
     pub session_id: String,
@@ -34,6 +36,9 @@ pub struct SessionStats {
     pub cost: f64,
 }
 
+/// Token 统计
+/// 
+/// 记录会话的 token 使用情况
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct TokenStats {
     pub input: u64,
@@ -44,6 +49,8 @@ pub struct TokenStats {
 }
 
 /// 会话配置
+/// 
+/// Agent 会话的初始化参数
 pub struct AgentSessionConfig {
     pub model: Model,
     pub thinking_level: ThinkingLevel,
@@ -58,6 +65,8 @@ pub struct AgentSessionConfig {
 }
 
 /// Agent 会话
+/// 
+/// 管理 Agent 会话的生命周期、事件处理和统计
 #[allow(dead_code)] // 多个字段和方法供未来扩展使用
 pub struct AgentSession {
     agent: Agent,
@@ -74,6 +83,8 @@ pub struct AgentSession {
 impl AgentSession {
     #![allow(dead_code)] // 多个方法供未来扩展使用
     /// 创建新会话
+    /// 
+    /// 初始化 Agent 会话及其所有依赖组件
     pub async fn new(config: AgentSessionConfig) -> anyhow::Result<Self> {
         let session_id = config.session_id.clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -495,7 +506,9 @@ impl AgentSession {
     }
 }
 
-/// 创建 AgentSession 的 Builder 模式
+/// AgentSession 构建器
+/// 
+/// 使用 Builder 模式创建 AgentSession
 #[allow(dead_code)] // Builder 模式供未来扩展使用
 pub struct AgentSessionBuilder {
     model: Option<Model>,
@@ -727,11 +740,11 @@ mod tests {
             cache_write: None,
         };
         
-        let cache_read_tokens = Some(8000u64);
-        let cache_write_tokens = Some(2000u64);
+        let cache_read_tokens: u64 = 8000;
+        let cache_write_tokens: u64 = 2000;
         
-        let cache_read_cost = cache_read_tokens.unwrap_or(0) as f64 * cost.cache_read.unwrap_or(0.0) / 1_000_000.0;
-        let cache_write_cost = cache_write_tokens.unwrap_or(0) as f64 * cost.cache_write.unwrap_or(0.0) / 1_000_000.0;
+        let cache_read_cost = cache_read_tokens as f64 * cost.cache_read.unwrap_or(0.0) / 1_000_000.0;
+        let cache_write_cost = cache_write_tokens as f64 * cost.cache_write.unwrap_or(0.0) / 1_000_000.0;
         
         assert!((cache_read_cost - 0.0).abs() < 0.0001);
         assert!((cache_write_cost - 0.0).abs() < 0.0001);

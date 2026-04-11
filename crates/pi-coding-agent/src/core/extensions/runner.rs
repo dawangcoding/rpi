@@ -162,10 +162,8 @@ impl Default for ExtensionManager {
 mod tests {
     use super::*;
     use crate::config::AppConfig;
-    use crate::core::extensions::types::{ExtensionManifest, Extension, EventResult, CommandArgs, CommandResult, SlashCommand, CommandSource};
+    use crate::core::extensions::types::{ExtensionManifest, Extension, EventResult, SlashCommand};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::pin::Pin;
-    use std::future::Future;
     use std::path::PathBuf;
 
     // ==================== Mock Extension ====================
@@ -187,10 +185,6 @@ mod tests {
                 },
                 activated: Arc::new(AtomicBool::new(false)),
             }
-        }
-        
-        fn is_activated(&self) -> bool {
-            self.activated.load(Ordering::Relaxed)
         }
     }
 

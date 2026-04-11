@@ -1051,7 +1051,7 @@ data: [DONE]
         // 测试 429 错误
         let error_json = r#"{"error": {"message": "Rate limit exceeded", "type": "rate_limit_error", "code": "rate_limit"}}"#;
 
-        let mock = server.mock("POST", "/chat/completions")
+        let _mock = server.mock("POST", "/chat/completions")
             .with_status(429)
             .with_header("content-type", "application/json")
             .with_body(error_json)

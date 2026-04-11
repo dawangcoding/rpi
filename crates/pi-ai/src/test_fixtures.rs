@@ -125,7 +125,7 @@ pub mod fixtures {
             .map(|c| c.iter().collect())
             .collect();
         
-        for (_i, chunk) in chunks.iter().enumerate() {
+        for chunk in chunks.iter() {
             let line = format!(
                 r#"data: {{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-4","choices":[{{"index":0,"delta":{{"role":"assistant","content":"{}"}},"finish_reason":null}}]}}"#,
                 chunk.replace('"', "\\\"")

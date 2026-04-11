@@ -1678,7 +1678,7 @@ data: {"type":"message_stop"}
 
     #[test]
     fn test_oauth_token_variations() {
-        let provider = AnthropicProvider::new();
+        let _provider = AnthropicProvider::new();
         
         // 测试各种 OAuth token 格式
         assert!(AnthropicProvider::is_oauth_token("sk-ant-oat-12345"));

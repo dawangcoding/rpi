@@ -1222,7 +1222,7 @@ data: [DONE]
         let error_json = r#"{"error": {"message": "Rate limit exceeded", "type": "rate_limit_error", "code": "rate_limit"}}"#;
 
         // 因为有重试机制，需要设置多次期望
-        let mock = server.mock("POST", "/chat/completions")
+        let _mock = server.mock("POST", "/chat/completions")
             .with_status(429)
             .with_header("content-type", "application/json")
             .with_body(error_json)
@@ -1250,7 +1250,7 @@ data: [DONE]
         // 测试 500 错误
         let error_json = r#"{"error": {"message": "Internal server error", "type": "internal_error"}}"#;
 
-        let mock = server.mock("POST", "/chat/completions")
+        let _mock = server.mock("POST", "/chat/completions")
             .with_status(500)
             .with_header("content-type", "application/json")
             .with_body(error_json)
@@ -1484,7 +1484,7 @@ data: [DONE]
         let messages = convert_messages(&model, &context, &compat).unwrap();
 
         // 空消息也会被包含（OpenAI 格式）
-        assert!(messages.len() >= 1);
+        assert!(!messages.is_empty());
     }
 
     #[test]

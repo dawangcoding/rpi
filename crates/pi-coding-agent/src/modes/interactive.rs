@@ -1219,20 +1219,6 @@ fn format_number(n: u64) -> String {
     result.chars().rev().collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_format_number() {
-        assert_eq!(format_number(0), "0");
-        assert_eq!(format_number(100), "100");
-        assert_eq!(format_number(1000), "1,000");
-        assert_eq!(format_number(1234567), "1,234,567");
-        assert_eq!(format_number(1234567890), "1,234,567,890");
-    }
-}
-
 /// 处理粘贴内容
 fn handle_paste(
     pasted: &str,
@@ -1271,4 +1257,18 @@ fn handle_paste(
     stdout.flush()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_number() {
+        assert_eq!(format_number(0), "0");
+        assert_eq!(format_number(100), "100");
+        assert_eq!(format_number(1000), "1,000");
+        assert_eq!(format_number(1234567), "1,234,567");
+        assert_eq!(format_number(1234567890), "1,234,567,890");
+    }
 }

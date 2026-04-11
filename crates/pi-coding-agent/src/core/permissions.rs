@@ -382,8 +382,10 @@ mod tests {
 
     #[test]
     fn test_check_bash_command_allowed_list() {
-        let mut config = ToolPermissionConfig::default();
-        config.bash_allowed_commands = Some(vec!["ls".to_string(), "cat".to_string()]);
+        let config = ToolPermissionConfig {
+            bash_allowed_commands: Some(vec!["ls".to_string(), "cat".to_string()]),
+            ..Default::default()
+        };
         let manager = PermissionManager::new(config);
         
         // 允许的命令

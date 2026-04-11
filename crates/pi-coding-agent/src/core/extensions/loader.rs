@@ -190,10 +190,7 @@ mod tests {
     use super::*;
     use crate::config::{AppConfig, ExtensionsConfig};
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::path::PathBuf;
-    use std::pin::Pin;
-    use std::future::Future;
 
     // ==================== Mock Extension ====================
 
@@ -325,13 +322,14 @@ mod tests {
     // ==================== ExtensionRegistry load_enabled Tests ====================
 
     fn create_config_with_extensions(enabled: Vec<String>, disabled: Vec<String>) -> AppConfig {
-        let mut config = AppConfig::default();
-        config.extensions = Some(ExtensionsConfig {
-            enabled,
-            disabled,
-            settings: std::collections::HashMap::new(),
-        });
-        config
+        AppConfig {
+            extensions: Some(ExtensionsConfig {
+                enabled,
+                disabled,
+                settings: std::collections::HashMap::new(),
+            }),
+            ..Default::default()
+        }
     }
 
     #[test]

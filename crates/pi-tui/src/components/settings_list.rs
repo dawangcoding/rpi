@@ -4,7 +4,12 @@
 use crate::tui::{Component, Focusable};
 use crate::utils::{truncate_to_width_with_ellipsis, visible_width};
 
+/// 值变更回调类型
+type OnChangeCallback = Box<dyn Fn(&str, &SettingValue) + Send>;
+
 /// 设置值类型
+/// 
+/// 支持的各种设置值类型
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingValue {
     /// 布尔值
@@ -37,6 +42,8 @@ impl SettingValue {
 }
 
 /// 设置项
+/// 
+/// 单个配置项的定义和当前值
 #[derive(Debug, Clone)]
 pub struct SettingEntry {
     /// 设置名称
@@ -80,6 +87,8 @@ impl SettingEntry {
 }
 
 /// 设置分类
+/// 
+/// 将相关设置项分组显示
 #[derive(Debug, Clone)]
 pub struct SettingsCategory {
     /// 分类名称
@@ -119,6 +128,8 @@ struct FlatEntry {
 }
 
 /// 设置列表组件
+/// 
+/// 支持多种设置类型的显示和交互式编辑
 pub struct SettingsList {
     /// 设置分类列表
     categories: Vec<SettingsCategory>,
@@ -137,7 +148,7 @@ pub struct SettingsList {
     /// 最大可见项数
     max_visible: usize,
     /// 值变更回调
-    on_change: Option<Box<dyn Fn(&str, &SettingValue) + Send>>,
+    on_change: Option<OnChangeCallback>,
 }
 
 impl SettingsList {
@@ -198,7 +209,7 @@ impl SettingsList {
     }
 
     /// 设置值变更回调
-    pub fn on_change(&mut self, callback: Box<dyn Fn(&str, &SettingValue) + Send>) {
+    pub fn on_change(&mut self, callback: OnChangeCallback) {
         self.on_change = Some(callback);
     }
 
@@ -741,7 +752,7 @@ mod tests {
         assert_eq!(SettingValue::Boolean(true).display_text(), "✓");
         assert_eq!(SettingValue::Boolean(false).display_text(), "✗");
         assert_eq!(SettingValue::String("test".to_string()).display_text(), "test");
-        assert_eq!(SettingValue::Number(3.14).display_text(), "3.14");
+        assert_eq!(SettingValue::Number(3.15).display_text(), "3.15");
         assert_eq!(
             SettingValue::Enum {
                 options: vec!["A".to_string(), "B".to_string()],

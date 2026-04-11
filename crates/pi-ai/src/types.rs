@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 
 /// API 类型枚举
+/// 
+/// 支持的 LLM API 类型
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum Api {
@@ -58,6 +60,8 @@ pub enum Api {
 }
 
 /// Provider 类型枚举
+/// 
+/// LLM 服务提供商
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Provider {
@@ -100,6 +104,8 @@ pub enum Provider {
 }
 
 /// 停止原因枚举
+/// 
+/// 助手消息生成停止的原因
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum StopReason {
@@ -111,6 +117,8 @@ pub enum StopReason {
 }
 
 /// 思考级别枚举
+/// 
+/// 控制模型思考/推理的深度
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
@@ -123,7 +131,9 @@ pub enum ThinkingLevel {
     XHigh,
 }
 
-/// 文本内容
+/// 文本内容块
+/// 
+/// 表示消息中的文本片段
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextContent {
     #[serde(rename = "type")]
@@ -143,7 +153,9 @@ impl TextContent {
     }
 }
 
-/// 思考内容
+/// 思考内容块
+/// 
+/// 表示模型的思考过程
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkingContent {
     #[serde(rename = "type")]
@@ -166,7 +178,9 @@ impl ThinkingContent {
     }
 }
 
-/// 图片内容
+/// 图片内容块
+/// 
+/// 表示消息中的图片数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageContent {
     #[serde(rename = "type")]
@@ -188,6 +202,8 @@ impl ImageContent {
 }
 
 /// 工具调用
+/// 
+/// 表示助手请求调用的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     #[serde(rename = "type")]
@@ -212,6 +228,8 @@ impl ToolCall {
 }
 
 /// 内容块枚举
+/// 
+/// 消息内容的组成部分
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ContentBlock {
@@ -225,7 +243,9 @@ pub enum ContentBlock {
     ToolCall(ToolCall),
 }
 
-/// 用户内容：可以是纯字符串或内容块数组
+/// 用户内容
+/// 
+/// 可以是纯字符串或内容块数组
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum UserContent {
@@ -252,6 +272,8 @@ impl From<Vec<ContentBlock>> for UserContent {
 }
 
 /// Token 使用量
+/// 
+/// 记录 API 调用的 token 消耗统计
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Usage {
     #[serde(rename = "inputTokens", alias = "input")]
@@ -265,6 +287,8 @@ pub struct Usage {
 }
 
 /// 用户消息
+/// 
+/// 表示用户发送的消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMessage {
     #[serde(skip)]
@@ -292,6 +316,8 @@ impl UserMessage {
 }
 
 /// 助手消息
+/// 
+/// 表示 AI 助手生成的回复消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantMessage {
     #[serde(skip)]
@@ -371,6 +397,8 @@ impl AssistantMessage {
 }
 
 /// 工具结果消息
+/// 
+/// 表示工具执行后返回的结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultMessage {
     #[serde(skip)]
@@ -421,6 +449,8 @@ impl ToolResultMessage {
 }
 
 /// 消息枚举
+/// 
+/// 对话中的消息类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role")]
 pub enum Message {
@@ -433,6 +463,8 @@ pub enum Message {
 }
 
 /// 工具定义
+/// 
+/// 描述可供模型调用的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tool {
     pub name: String,
@@ -456,6 +488,8 @@ impl Tool {
 }
 
 /// 对话上下文
+/// 
+/// 包含系统提示词、消息历史和可用工具
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Context {
     #[serde(rename = "systemPrompt", skip_serializing_if = "Option::is_none")]
@@ -486,6 +520,8 @@ impl Context {
 }
 
 /// 输入模态枚举
+/// 
+/// 模型支持的输入类型
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub enum InputModality {
@@ -494,6 +530,8 @@ pub enum InputModality {
 }
 
 /// 模型成本
+/// 
+/// 每百万 token 的定价信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelCost {
     /// $/million tokens
@@ -509,6 +547,8 @@ pub struct ModelCost {
 }
 
 /// 模型定义
+/// 
+/// 描述 LLM 模型的配置和元数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Model {
     pub id: String,
@@ -531,6 +571,8 @@ pub struct Model {
 }
 
 /// 传输方式枚举
+/// 
+/// API 数据传输协议
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Transport {
@@ -540,6 +582,8 @@ pub enum Transport {
 }
 
 /// 缓存保留策略枚举
+/// 
+/// 控制 prompt 缓存的保留时长
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum CacheRetention {
@@ -549,6 +593,8 @@ pub enum CacheRetention {
 }
 
 /// 流选项
+/// 
+/// 配置流式 API 调用的参数
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -572,6 +618,8 @@ pub struct StreamOptions {
 }
 
 /// 思考预算
+/// 
+/// 控制模型思考的 token 预算
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ThinkingBudgets {
     #[serde(rename = "thinkingBudget", skip_serializing_if = "Option::is_none")]
@@ -581,6 +629,8 @@ pub struct ThinkingBudgets {
 }
 
 /// 简化流选项
+/// 
+/// 简化版的流式 API 配置参数
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SimpleStreamOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -608,6 +658,8 @@ pub struct SimpleStreamOptions {
 }
 
 /// 完成原因枚举
+/// 
+/// 消息生成正常完成的原因
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub enum DoneReason {
@@ -617,6 +669,8 @@ pub enum DoneReason {
 }
 
 /// 错误原因枚举
+/// 
+/// 消息生成异常终止的原因
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub enum ErrorReason {
@@ -625,6 +679,8 @@ pub enum ErrorReason {
 }
 
 /// 助手消息事件枚举
+/// 
+/// 流式响应中的事件类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AssistantMessageEvent {

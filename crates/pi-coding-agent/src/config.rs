@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use crate::core::permissions::ToolPermissionConfig;
 
 /// 应用配置
+/// 
+/// 管理应用的全局配置，包括 API keys、默认模型、会话目录等
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     /// 默认模型 ID
@@ -49,6 +51,8 @@ pub struct AppConfig {
 }
 
 /// 自定义模型配置
+/// 
+/// 用户自定义的模型定义
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomModelConfig {
     pub id: String,
@@ -61,6 +65,8 @@ pub struct CustomModelConfig {
 }
 
 /// 扩展配置
+/// 
+/// 管理扩展的启用/禁用和设置
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExtensionsConfig {
     /// 启用的扩展列表（为空表示加载所有可用扩展）

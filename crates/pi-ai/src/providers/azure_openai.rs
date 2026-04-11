@@ -1038,7 +1038,7 @@ data: [DONE]
 
         let error_json = r#"{"error": {"message": "Rate limit exceeded", "type": "rate_limit_error", "code": "rate_limit"}}"#;
 
-        let mock = server.mock("POST", mockito::Matcher::Regex(r"/openai/deployments/.*/chat/completions".to_string()))
+        let _mock = server.mock("POST", mockito::Matcher::Regex(r"/openai/deployments/.*/chat/completions".to_string()))
             .with_status(429)
             .with_header("content-type", "application/json")
             .with_body(error_json)

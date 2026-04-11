@@ -7,7 +7,9 @@ use anyhow::Result;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// 组件 trait - 所有 UI 组件的基础接口
+/// 组件 trait
+/// 
+/// 所有 UI 组件的基础接口，定义渲染和输入处理能力
 pub trait Component: Send {
     /// 渲染组件，返回每行的 ANSI 字符串
     fn render(&self, width: u16) -> Vec<String>;
@@ -27,12 +29,16 @@ pub trait Component: Send {
 }
 
 /// 可聚焦 trait
+/// 
+/// 定义可接收焦点的组件行为
 pub trait Focusable {
     fn focused(&self) -> bool;
     fn set_focused(&mut self, focused: bool);
 }
 
 /// 覆盖层定位锚点
+/// 
+/// 定义覆盖层在屏幕上的定位方式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[derive(Default)]
 pub enum OverlayAnchor {
@@ -49,7 +55,9 @@ pub enum OverlayAnchor {
 }
 
 
-/// 尺寸值（绝对列数或百分比）
+/// 尺寸值
+/// 
+/// 支持绝对像素或百分比尺寸
 #[derive(Debug, Clone, Copy)]
 pub enum SizeValue {
     Absolute(u16),
@@ -74,6 +82,8 @@ impl From<u16> for SizeValue {
 }
 
 /// 覆盖层边距
+/// 
+/// 定义覆盖层的内边距
 #[derive(Debug, Clone, Copy)]
 #[derive(Default)]
 pub struct OverlayMargin {
@@ -97,6 +107,8 @@ impl OverlayMargin {
 
 
 /// 覆盖层选项
+/// 
+/// 配置覆盖层的尺寸、位置和显示行为
 #[derive(Debug, Clone)]
 #[derive(Default)]
 pub struct OverlayOptions {
@@ -133,6 +145,8 @@ struct OverlayEntry {
 }
 
 /// 覆盖层句柄
+/// 
+/// 用于控制和管理覆盖层的生命周期
 #[derive(Clone)]
 pub struct OverlayHandle {
     index: usize,
@@ -176,6 +190,8 @@ impl OverlayHandle {
 }
 
 /// 容器组件
+/// 
+/// 包含多个子组件的复合组件
 pub struct Container {
     children: Vec<Box<dyn Component>>,
 }
@@ -241,7 +257,9 @@ impl Component for Container {
     }
 }
 
-/// 虚拟视口 - 只渲染可见区域
+/// 虚拟视口
+/// 
+/// 优化大内容的渲染性能，只渲染可见区域
 pub struct VirtualViewport {
     /// 所有内容行
     total_lines: usize,
@@ -321,7 +339,9 @@ impl VirtualViewport {
     }
 }
 
-/// 主 TUI 结构体 - 差分渲染引擎
+/// 主 TUI 结构体
+/// 
+/// 差分渲染引擎，管理组件树和覆盖层
 pub struct Tui {
     terminal: Box<dyn Terminal>,
     root: Container,

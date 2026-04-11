@@ -6,6 +6,8 @@ use crate::utils::wrap_text_with_ansi;
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 
 /// Markdown 渲染组件
+/// 
+/// 将 Markdown 文本渲染为带 ANSI 样式的终端文本
 pub struct Markdown {
     content: String,
     rendered_lines: Vec<String>,
@@ -671,6 +673,6 @@ mod tests {
         // 窄宽度应该导致换行
         assert!(!lines.is_empty());
         // 多行表示发生了换行
-        assert!(lines.len() >= 1);
+        assert!(!lines.is_empty());
     }
 }

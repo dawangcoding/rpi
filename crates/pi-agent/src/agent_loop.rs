@@ -12,6 +12,8 @@ use crate::types::*;
 use crate::context_manager::ContextWindowManager;
 
 /// Agent 循环配置
+/// 
+/// 定义 Agent 主循环的行为参数和回调函数
 #[allow(clippy::type_complexity)] // 复杂类型是必要的，用于回调函数
 pub struct AgentLoopConfig {
     pub model: Model,
@@ -76,6 +78,8 @@ pub struct AgentLoopConfig {
 }
 
 /// 从新提示启动 Agent 循环
+/// 
+/// 处理用户输入并启动完整的 Agent 交互循环
 pub async fn run_agent_loop(
     prompts: Vec<AgentMessage>,
     context: &mut AgentContext,
@@ -116,6 +120,8 @@ pub async fn run_agent_loop(
 }
 
 /// 从已有消息继续循环（用于重试）
+/// 
+/// 在已有对话上下文基础上继续 Agent 循环
 pub async fn run_agent_loop_continue(
     context: &mut AgentContext,
     config: &AgentLoopConfig,
@@ -959,7 +965,7 @@ mod tests {
     #[test]
     fn test_agent_loop_config_with_tools() {
         let model = sample_agent_state().model;
-        let tools = sample_mock_tools();
+        let _tools = sample_mock_tools();
         
         let config = AgentLoopConfig {
             model,
@@ -1230,7 +1236,7 @@ mod tests {
     #[test]
     fn test_thinking_level_variants() {
         // 测试所有 ThinkingLevel 变体
-        let levels = vec![
+        let levels = [
             ThinkingLevel::Off,
             ThinkingLevel::Minimal,
             ThinkingLevel::Low,
